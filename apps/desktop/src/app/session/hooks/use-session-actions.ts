@@ -3,6 +3,7 @@ import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
@@ -19,7 +20,6 @@ import {
   $pendingWorktree,
   $sessions,
   $yoloActive,
-  getRememberedWorkspaceCwd,
   sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
@@ -42,7 +42,8 @@ import {
   setSessionStartedAt,
   setSessionsTotal,
   setTurnStartedAt,
-  setYoloActive
+  setYoloActive,
+  workspaceCwdForNewSession
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -287,6 +288,8 @@ export function useSessionActions({
   syncSessionStateToView,
   updateSessionState
 }: SessionActionsOptions) {
+  const { t } = useI18n()
+  const copy = t.desktop
   const resumeRequestRef = useRef(0)
 
   const startFreshSessionDraft = useCallback(
@@ -310,8 +313,9 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      // New chats inherit the current workspace.
-      setCurrentCwd(getRememberedWorkspaceCwd())
+      // New chats start in the configured default project dir when set,
+      // otherwise the sticky last-used workspace (PR #37586).
+      setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
       // A plain new-chat draft is never a worktree session; clear any stale arm.
       setPendingWorktree(false)
@@ -334,18 +338,25 @@ export function useSessionActions({
         // Route the new chat to the chosen profile's backend (null = primary,
         // so single-profile users are unaffected).
         await ensureGatewayProfile($newChatProfile.get())
-        const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
+        const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
+        // Pass the owning profile so a new chat under a non-launch profile (global
+        // remote mode) builds its agent + persists against THAT profile's home/db.
+        const newChatProfile = $newChatProfile.get()
         // The fork icon arms a one-shot worktree request; consume + reset it so
         // a later plain new-chat doesn't accidentally inherit it.
         const worktree = $pendingWorktree.get()
+
         if (worktree) {
           setPendingWorktree(false)
         }
+
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
+          ...(newChatProfile ? { profile: newChatProfile } : {}),
           ...(worktree && cwd ? { worktree: true } : {})
         })
+
         const stored = created.stored_session_id ?? null
 
         if (
@@ -467,15 +478,31 @@ export function useSessionActions({
         clearComposerDraft()
         clearComposerAttachments()
 
-        void requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
-          .then(usage => {
-            if (isCurrentResume() && usage) {
-              setCurrentUsage(current => ({ ...current, ...usage }))
-            }
-          })
-          .catch(() => undefined)
+        try {
+          const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 
-        return
+          if (!isCurrentResume()) {
+            return
+          }
+
+          if (usage) {
+            setCurrentUsage(current => ({ ...current, ...usage }))
+          }
+
+          return
+        } catch {
+          // The cached runtime id was minted by a prior backend instance. A
+          // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
+          // and respawned across a profile swap mints fresh ids, so this mapping
+          // now 404s ("session not found"). Drop it and fall through to a full
+          // resume that rebinds a live runtime id.
+          if (!isCurrentResume()) {
+            return
+          }
+
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+        }
       }
 
       setFreshDraftReady(false)
@@ -527,7 +554,11 @@ export function useSessionActions({
 
         const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
-          cols: 96
+          cols: 96,
+          // Owning profile: in app-global remote mode one backend serves every
+          // profile, so the gateway opens this profile's state.db + home to
+          // resume + persist the right session (no-op for single/launch profile).
+          ...(sessionProfile ? { profile: sessionProfile } : {})
         })
 
         if (!isCurrentResume()) {
@@ -589,7 +620,7 @@ export function useSessionActions({
         }
 
         setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
-        notifyError(err, 'Resume failed')
+        notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {
           busyRef.current = false
@@ -601,6 +632,7 @@ export function useSessionActions({
     [
       activeSessionIdRef,
       busyRef,
+      copy,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,
@@ -617,8 +649,8 @@ export function useSessionActions({
       if (!sourceSessionId) {
         notify({
           kind: 'warning',
-          title: 'Nothing to branch',
-          message: 'Start or resume a chat before branching.'
+          title: copy.nothingToBranch,
+          message: copy.branchNeedsChat
         })
 
         return false
@@ -627,8 +659,8 @@ export function useSessionActions({
       if (busyRef.current) {
         notify({
           kind: 'warning',
-          title: 'Session busy',
-          message: 'Stop the current turn before branching this chat.'
+          title: copy.sessionBusy,
+          message: copy.branchStopCurrent
         })
 
         return false
@@ -658,8 +690,8 @@ export function useSessionActions({
         if (!branchMessages.length) {
           notify({
             kind: 'warning',
-            title: 'Nothing to branch',
-            message: 'This message has no text to branch from.'
+            title: copy.nothingToBranch,
+            message: copy.branchNoText
           })
 
           return false
@@ -673,14 +705,14 @@ export function useSessionActions({
           cols: 96,
           ...(cwd && { cwd }),
           messages: branchMessages.map(({ content, role }) => ({ content, role })),
-          title: 'Branch'
+          title: copy.branchTitle
         })
 
         const routedSessionId = branched.stored_session_id ?? branched.session_id
         const preview = branchMessages.map(({ content }) => content).find(Boolean) ?? null
 
         setFreshDraftReady(false)
-        upsertOptimisticSession(branched, routedSessionId, 'Branch', preview)
+        upsertOptimisticSession(branched, routedSessionId, copy.branchTitle, preview)
         ensureSessionState(branched.session_id, routedSessionId)
         setActiveSessionId(branched.session_id)
         activeSessionIdRef.current = branched.session_id
@@ -710,7 +742,7 @@ export function useSessionActions({
 
         return true
       } catch (err) {
-        notifyError(err, 'Branch failed')
+        notifyError(err, copy.branchFailed)
 
         return false
       } finally {
@@ -722,6 +754,7 @@ export function useSessionActions({
     [
       activeSessionIdRef,
       busyRef,
+      copy,
       creatingSessionRef,
       ensureSessionState,
       navigate,
@@ -761,7 +794,7 @@ export function useSessionActions({
           await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId)
+        await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
 
         if (closingRuntimeId) {
@@ -799,12 +832,13 @@ export function useSessionActions({
           }
         }
 
-        notifyError(err, 'Delete failed')
+        notifyError(err, copy.deleteFailed)
       }
     },
     [
       activeSessionId,
       activeSessionIdRef,
+      copy,
       navigate,
       requestGateway,
       selectedStoredSessionId,
@@ -837,8 +871,8 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true)
-        notify({ durationMs: 2_000, kind: 'success', message: 'Archived' })
+        await setSessionArchived(storedSessionId, true, archived?.profile)
+        notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
           setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])
@@ -846,10 +880,10 @@ export function useSessionActions({
         }
 
         $pinnedSessionIds.set(previousPinned)
-        notifyError(err, 'Archive failed')
+        notifyError(err, copy.archiveFailed)
       }
     },
-    [selectedStoredSessionId, startFreshSessionDraft]
+    [copy, selectedStoredSessionId, startFreshSessionDraft]
   )
 
   return {
