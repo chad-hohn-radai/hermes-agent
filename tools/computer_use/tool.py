@@ -710,10 +710,29 @@ def _route_capture_through_aux_vision(
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
         cache_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
+
+        # Downscale before handing to the aux vision model. Full-resolution
+        # desktop captures (e.g. 1920x1032) tokenize to thousands of vision
+        # tokens and overflow small local-model context windows ("the vision
+        # API rejected the image"); ~1456px keeps SOM badges legible while
+        # fitting comfortably and cutting latency.
+        _MAX_VISION_DIM = 1456
+        try:
+            from io import BytesIO as _BytesIO
+            from PIL import Image as _Image
+            img = _Image.open(_BytesIO(raw))
+            if max(img.size) > _MAX_VISION_DIM:
+                img.thumbnail((_MAX_VISION_DIM, _MAX_VISION_DIM))
+                out = _BytesIO()
+                img.save(out, format="JPEG" if ext == ".jpg" else "PNG")
+                raw = out.getvalue()
+        except Exception as exc:
+            logger.debug("computer_use: vision downscale skipped: %s", exc)
+
         temp_image_path.write_bytes(raw)
 
         prompt = (
-            "Describe what is visible in this macOS application screenshot in "
+            "Describe what is visible in this application screenshot in "
             "concise but specific terms. Mention the app name and window "
             "title if visible, the overall layout, any labelled buttons, "
             "menus or text fields, and any prominent text content the user "
