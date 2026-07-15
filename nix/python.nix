@@ -8,6 +8,7 @@
   pyproject-build-systems,
   stdenv,
   pythonSrc,
+  venvName ? "hermes-agent-env",
   dependency-groups ? [ "all" ],
 }:
 let
@@ -97,6 +98,6 @@ let
         pythonPackageOverrides
       ]);
 in
-pythonSet.mkVirtualEnv "hermes-agent-env" {
+pythonSet.mkVirtualEnv venvName {
   hermes-agent = dependency-groups;
 }

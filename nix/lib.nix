@@ -103,6 +103,15 @@ let
             "plans"
             # Nix build definitions (Python build doesn't need these)
             "nix"
+            # Skills are shipped via HERMES_BUNDLED_SKILLS /
+            # HERMES_OPTIONAL_SKILLS (see hermes-agent.nix), not via the
+            # wheel's data_files — setup.py's _data_file_tree returns []
+            # for a missing dir, so the wheel builds fine without them.
+            # This keeps SKILL.md edits from rebuilding the Python venv.
+            # NOTE: optional-mcps must stay — pyproject.toml lists its
+            # manifests as explicit data-files, which error when missing.
+            "skills"
+            "optional-skills"
           ];
         excludedFiles = [
           # JS root manifests
@@ -112,6 +121,19 @@ let
           "Dockerfile"
           "docker-compose.yml"
           "docker-compose.windows.yml"
+          # Nix build definitions — editing the flake shouldn't rebuild
+          # the venv.  (Input changes rebuild regardless, via the lock.)
+          "flake.nix"
+          "flake.lock"
+          # Root docs the wheel doesn't consume.  README.md and LICENSE
+          # must stay — pyproject.toml references them (readme /
+          # license-files).
+          "AGENTS.md"
+          "CONTRIBUTING.md"
+          "SECURITY.md"
+          "README.zh-CN.md"
+          ".gitignore"
+          "setup-hermes.sh"
         ];
       in
       if relPath == "" then
@@ -182,10 +204,7 @@ let
   '';
 in
 {
-  inherit
-    pythonSrc
-    npmDepsSrc
-    ;
+  inherit pythonSrc;
 
   # Regenerate the shared root lockfile from scratch and verify all npm
   # packages still build.  Exposed as a runnable package — `nix run
@@ -193,7 +212,9 @@ in
   # in a build sandbox's PATH.  All workspace packages share one lockfile,
   # so there's a single script (not one per package).
   updateNpmLockfile = pkgs.writeShellScriptBin "update-npm-lockfile" ''
-    set -euox pipefail
+    set -euo pipefail
+    # DEBUG=1 nix run .#update-npm-lockfile — trace every command
+    [ -n "''${DEBUG:-}" ] && set -x
 
     REPO_ROOT=$(git rev-parse --show-toplevel)
     cd "$REPO_ROOT"
@@ -332,7 +353,11 @@ in
       attr, # flake package attr for fallback verification build, e.g. "tui"
     }:
     pkgs.writeShellScriptBin "fix-lockfiles" ''
-      set -uox pipefail
+      # Deliberately no `set -e`: this script inspects exit statuses of
+      # nix build / prefetch-npm-deps probes and handles them itself.
+      set -uo pipefail
+      # DEBUG=1 fix-lockfiles — trace every command
+      [ -n "''${DEBUG:-}" ] && set -x
       MODE="''${1:---apply}"
       case "$MODE" in
         --check|--apply) ;;

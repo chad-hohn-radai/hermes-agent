@@ -43,6 +43,17 @@ let
     dependency-groups = [ "all" ] ++ extraDependencyGroups;
   };
 
+  # Dev venv: release deps + [dev] extras (pytest, ruff, ty, debugpy...).
+  # Only the devShell references this, and the devShell references ONLY
+  # this — so `nix develop` never pulls the release venv, and release
+  # builds never pull the dev tooling.
+  hermesDevVenv = callPackage ./python.nix {
+    inherit uv2nix pyproject-nix pyproject-build-systems;
+    pythonSrc = hermesNpmLib.pythonSrc;
+    venvName = "hermes-agent-dev-env";
+    dependency-groups = [ "all" "dev" ] ++ extraDependencyGroups;
+  };
+
   hermesNpmLib = callPackage ./lib.nix {
     inherit npm-lockfile-fix nodejs;
   };
@@ -57,7 +68,17 @@ let
 
   bundledSkills = lib.cleanSourceWith {
     src = ../skills;
-    filter = path: _type: !(lib.hasInfix "/index-cache/" path);
+    filter = path: _type:
+      !(lib.hasInfix "/index-cache/" path) && !(lib.hasInfix "/__pycache__/" path);
+  };
+
+  # Optional skills are NOT in the wheel (pythonSrc excludes them, see
+  # lib.nix) — the wrapper exposes them via HERMES_OPTIONAL_SKILLS, the
+  # same mechanism Homebrew packaging uses.
+  bundledOptionalSkills = lib.cleanSourceWith {
+    src = ../optional-skills;
+    filter = path: _type:
+      !(lib.hasInfix "/index-cache/" path) && !(lib.hasInfix "/__pycache__/" path);
   };
 
   # Import bundled plugins (memory, context_engine, platforms/*).  Keeping
@@ -164,28 +185,38 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
+    # Symlinks, not copies: these are all store paths already, and the
+    # wrapper env vars just hold paths.  Symlinking keeps this derivation
+    # near-instant when only the venv changed, with an identical closure.
     mkdir -p $out/share/hermes-agent $out/bin
-    cp -r ${bundledSkills} $out/share/hermes-agent/skills
-    cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
-    cp -r ${bundledLocales} $out/share/hermes-agent/locales
-    cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
-
-    mkdir -p $out/ui-tui
-    cp -r ${hermesTui}/lib/hermes-tui/* $out/ui-tui/
+    ln -s ${bundledSkills} $out/share/hermes-agent/skills
+    ln -s ${bundledOptionalSkills} $out/share/hermes-agent/optional-skills
+    ln -s ${bundledPlugins} $out/share/hermes-agent/plugins
+    ln -s ${bundledLocales} $out/share/hermes-agent/locales
+    ln -s ${hermesWeb} $out/share/hermes-agent/web_dist
+    ln -s ${hermesTui}/lib/hermes-tui $out/ui-tui
 
     ${lib.concatMapStringsSep "\n"
       (name: ''
         makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
+          --set HERMES_OPTIONAL_SKILLS $out/share/hermes-agent/optional-skills \
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
           --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
-          --set HERMES_NODE ${lib.getExe nodejs} \
-          ${lib.optionalString (rev != null) ''--set HERMES_REVISION ${rev} \''}
-          ${lib.optionalString (extraPythonPackages != [ ]) ''--suffix PYTHONPATH : "${pythonPath}"''}
+          --set HERMES_NODE ${lib.getExe nodejs}${
+            # Fold the line continuation INTO the optionalString: a bare
+            # `\` on the line above an empty expansion would dangle onto a
+            # blank line, ending the makeWrapper command early and running
+            # the next flag as its own shell command (`--suffix: command
+            # not found`). Only reproduces when rev == null (dirty trees).
+            lib.optionalString (rev != null) " \\\n          --set HERMES_REVISION ${rev}"
+          }${
+            lib.optionalString (extraPythonPackages != [ ]) " \\\n          --suffix PYTHONPATH : \"${pythonPath}\""
+          }
       '')
       [
         "hermes"
@@ -209,6 +240,7 @@ stdenv.mkDerivation (finalAttrs: {
       hermesWeb
       hermesNpmLib
       hermesVenv
+      hermesDevVenv
       ;
 
     # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
@@ -230,14 +262,16 @@ stdenv.mkDerivation (finalAttrs: {
         echo "hermes-agent: installing Python dependencies..."
         uv venv .venv --python ${python312}/bin/python3 2>/dev/null || true
         source .venv/bin/activate
-        uv pip install -e ".[all]"
+        uv pip install -e ".[all,dev]"
         [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
         mkdir -p .nix-stamps
         echo "$STAMP_VALUE" > "$STAMP"
       else
         source .venv/bin/activate
-        export HERMES_PYTHON=${hermesVenv}/bin/python3
       fi
+      # Dev venv (release deps + [dev] tooling), NOT the release venv —
+      # keeps `nix develop` from pulling the production closure.
+      export HERMES_PYTHON=${hermesDevVenv}/bin/python3
     '';
   };
 
