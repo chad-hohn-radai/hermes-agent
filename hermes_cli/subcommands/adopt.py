@@ -27,18 +27,17 @@ DEFAULT_RELEASE_BASE = (
     "https://github.com/NousResearch/hermes-agent/releases/latest/download"
 )
 
-# Platform suffixes for the updater binary names.  ``hermes-updater-<suffix>``.
+# Platform suffixes match the release bundle matrix IDs.
 def _platform_suffix() -> str:
     """Return the release-asset suffix for the current platform."""
     machine = platform.machine().lower()
     if sys.platform == "darwin":
-        arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
+        arch = "arm64" if machine in ("arm64", "aarch64") else "x64"
         return f"darwin-{arch}"
     if sys.platform == "win32":
-        arch = "x86_64" if machine in ("amd64", "x86_64") else "aarch64"
-        return f"windows-{arch}.exe"
-    # Linux and other POSIX — include musl/glibc distinction later if needed.
-    arch = "aarch64" if machine in ("aarch64", "arm64") else "x86_64"
+        arch = "x64" if machine in ("amd64", "x86_64") else "arm64"
+        return f"win-{arch}.exe"
+    arch = "arm64" if machine in ("aarch64", "arm64") else "x64"
     return f"linux-{arch}"
 
 
@@ -62,14 +61,20 @@ def _download_updater(
     suffix = _platform_suffix()
     base = source_base or DEFAULT_RELEASE_BASE
     url = f"{base.rstrip('/')}/hermes-updater-{suffix}"
+    checksum_url = f"{url}.sha256"
 
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     # urllib.request supports both http(s):// and file:// schemes.
     with urllib.request.urlopen(url) as resp:  # noqa: S310 — URL is constructed
         data = resp.read()
+    with urllib.request.urlopen(checksum_url) as resp:  # noqa: S310
+        expected = resp.read().decode("ascii").strip().split()[0]
 
     dest.write_bytes(data)
+    if not _verify_sha256(dest, expected):
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(f"sha256 verification failed for {url}")
     dest.chmod(dest.stat().st_mode | stat.S_IRWXU)
     return dest
 

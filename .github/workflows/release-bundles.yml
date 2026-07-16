@@ -123,6 +123,18 @@ jobs:
             --out dist/bundle \
             --no-desktop  # phase 0: no desktop build in CI yet
 
+      - name: Stage updater bootstrap asset
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "win" ]]; then
+            asset="dist/hermes-updater-${{ matrix.platform }}.exe"
+            cp dist/bundle/bin/hermes.exe "$asset"
+          else
+            asset="dist/hermes-updater-${{ matrix.platform }}"
+            cp dist/bundle/bin/hermes "$asset"
+          fi
+          sha256sum "$asset" > "$asset.sha256"
+
       - name: Write and sign manifest
         shell: bash
         env:
@@ -171,7 +183,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}
-          path: dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*
+          path: |
+            dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*
+            dist/hermes-updater-${{ matrix.platform }}*
           retention-days: 30
 
       - name: Upload to GitHub Releases (tag only)
@@ -182,7 +196,8 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" \
             --generate-notes \
-            "dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*"
+            "dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*" \
+            "dist/hermes-updater-${{ matrix.platform }}*"
 
       - name: Upload to nightly prerelease (schedule only)
         if: github.event_name == 'schedule'
@@ -198,7 +213,9 @@ jobs:
           Built from commit ${{ github.sha }}.
           Platform: ${{ matrix.platform }}" \
             "dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*" \
+            "dist/hermes-updater-${{ matrix.platform }}*" \
             || \
           gh release upload hermes-nightly \
             --clobber \
-            "dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*"
+            "dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*" \
+            "dist/hermes-updater-${{ matrix.platform }}*"

@@ -3170,11 +3170,26 @@ bundle_mode() {
     # Download the hermes-updater binary
     local updater_url="${source_url}/latest/download/hermes-updater-${platform}"
     local updater_path="$HERMES_HOME/bin/hermes-updater"
+    local checksum_path="${updater_path}.sha256"
     log_info "Downloading hermes-updater ($platform)..."
     if ! curl -fsSL "$updater_url" -o "$updater_path"; then
         log_error "Failed to download hermes-updater from $updater_url"
         log_info "The bundle may not be available for $platform yet."
         log_info "Try a source install instead: bash scripts/install.sh (without --bundle)"
+        exit 1
+    fi
+    if ! curl -fsSL "${updater_url}.sha256" -o "$checksum_path"; then
+        log_error "Failed to download updater checksum"
+        rm -f "$updater_path" "$checksum_path"
+        exit 1
+    fi
+    local expected actual
+    expected=$(awk '{print $1}' "$checksum_path")
+    actual=$(sha256sum "$updater_path" | awk '{print $1}')
+    rm -f "$checksum_path"
+    if [ "$actual" != "$expected" ]; then
+        log_error "hermes-updater checksum verification failed"
+        rm -f "$updater_path"
         exit 1
     fi
     chmod +x "$updater_path"

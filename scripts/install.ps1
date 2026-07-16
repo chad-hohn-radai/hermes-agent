@@ -3556,6 +3556,12 @@ try {
 
         try {
             Invoke-WebRequest -Uri $updaterUrl -OutFile $updaterPath -UseBasicParsing
+            $checksum = (Invoke-WebRequest -Uri "$updaterUrl.sha256" -UseBasicParsing).Content.Trim().Split()[0]
+            $actual = (Get-FileHash -Path $updaterPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $checksum.ToLowerInvariant()) {
+                Remove-Item $updaterPath -Force -ErrorAction SilentlyContinue
+                throw "hermes-updater checksum verification failed"
+            }
         } catch {
             Write-Err "Failed to download hermes-updater: $_"
             Write-Info "Try a source install instead: .\install.ps1 -Source"

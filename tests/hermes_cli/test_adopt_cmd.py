@@ -147,6 +147,8 @@ def test_cmd_adopt_downloads_updater(monkeypatch, tmp_path):
     release_dir.mkdir()
     fake_binary = release_dir / "hermes-updater-test-platform"
     fake_binary.write_bytes(b"fake updater binary content")
+    checksum = adopt_mod.hashlib.sha256(fake_binary.read_bytes()).hexdigest()
+    fake_binary.with_suffix(".sha256").write_text(f"{checksum}  {fake_binary.name}\n")
 
     with patch("hermes_cli.config.detect_install_method", return_value="git"), \
          patch(
@@ -163,6 +165,21 @@ def test_cmd_adopt_downloads_updater(monkeypatch, tmp_path):
     downloaded = bin_dir / expected_name
     assert downloaded.exists()
     assert downloaded.read_bytes() == b"fake updater binary content"
+
+
+def test_download_updater_rejects_bad_checksum(monkeypatch, tmp_path):
+    monkeypatch.setattr(adopt_mod, "_platform_suffix", lambda: "test-platform")
+    release_dir = tmp_path / "release"
+    release_dir.mkdir()
+    binary = release_dir / "hermes-updater-test-platform"
+    binary.write_bytes(b"tampered")
+    binary.with_suffix(".sha256").write_text(f"{'0' * 64}  {binary.name}\n")
+    destination = tmp_path / "bin" / "hermes-updater"
+
+    with pytest.raises(RuntimeError, match="sha256 verification failed"):
+        adopt_mod._download_updater(destination, source_base=f"file://{release_dir}")
+
+    assert not destination.exists()
 
 
 # ---------------------------------------------------------------------------
