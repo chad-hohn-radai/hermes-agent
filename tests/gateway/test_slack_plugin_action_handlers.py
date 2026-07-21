@@ -87,6 +87,12 @@ def _make_ctx(name: str = "test_plugin") -> tuple[PluginManager, PluginContext]:
     return mgr, ctx
 
 
+def _discard_created_task(coro):
+    """Close connect-time watchdog coroutines in synchronous wiring tests."""
+    coro.close()
+    return MagicMock()
+
+
 class TestRegisterSlackActionHandlerAPI:
     """Behaviour of ctx.register_slack_action_handler()."""
 
@@ -190,6 +196,40 @@ class TestRegisterSlackActionHandlerAPI:
         assert {h[2] for h in handlers} == {"plug_a", "plug_b"}
 
 
+class TestRegisterSlackMessageObserverAPI:
+    """Behaviour of ctx.register_slack_message_observer()."""
+
+    def test_async_observer_is_queued(self):
+        mgr, ctx = _make_ctx()
+
+        async def observer(body):  # pragma: no cover - never called here
+            return None
+
+        ctx.register_slack_message_observer(observer)
+
+        observers = mgr.get_slack_message_observers()
+        assert len(observers) == 1
+        callback, plugin_name = observers[0]
+        assert callback is observer
+        assert plugin_name == "test_plugin"
+
+    def test_non_callable_observer_raises(self):
+        _mgr, ctx = _make_ctx()
+        with pytest.raises(ValueError, match="non-callable"):
+            ctx.register_slack_message_observer("not a function")  # type: ignore[arg-type]
+
+    def test_get_observers_returns_copy(self):
+        mgr, ctx = _make_ctx()
+
+        async def observer(body):  # pragma: no cover
+            return None
+
+        ctx.register_slack_message_observer(observer)
+        observers = mgr.get_slack_message_observers()
+        observers.clear()
+        assert len(mgr.get_slack_message_observers()) == 1
+
+
 # ---------------------------------------------------------------------------
 # SlackAdapter.connect wires plugin-registered handlers into AsyncApp
 # ---------------------------------------------------------------------------
@@ -199,6 +239,7 @@ def _connect_with_recording_app(
     adapter: SlackAdapter,
     *,
     plugin_handlers: list,
+    plugin_message_observers: list | None = None,
 ) -> tuple[bool, list]:
     """Run adapter.connect() with mocks and return (result, registered_actions).
 
@@ -240,6 +281,7 @@ def _connect_with_recording_app(
 
     fake_mgr = MagicMock()
     fake_mgr.get_slack_action_handlers.return_value = plugin_handlers
+    fake_mgr.get_slack_message_observers.return_value = plugin_message_observers or []
 
     with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
          patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
@@ -248,7 +290,7 @@ def _connect_with_recording_app(
          patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
          patch("gateway.status.release_scoped_lock"), \
          patch("hermes_cli.plugins.get_plugin_manager", return_value=fake_mgr), \
-         patch("asyncio.create_task"):
+         patch("asyncio.create_task", side_effect=_discard_created_task):
         result = asyncio.run(adapter.connect())
 
     return result, registered_actions
@@ -304,6 +346,46 @@ class TestSlackAdapterPluginActionWiring:
         # Built-ins still wired
         action_ids = [aid for aid, _cb in registered]
         assert "hermes_approve_once" in action_ids
+
+    def test_plugin_message_observer_is_loaded_at_connect(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        async def observer(body):  # pragma: no cover - not invoked here
+            return None
+
+        result, _registered = _connect_with_recording_app(
+            adapter,
+            plugin_handlers=[],
+            plugin_message_observers=[(observer, "triage")],
+        )
+
+        assert result is True
+        assert adapter._plugin_message_observers == [(observer, "triage")]
+
+    def test_message_observer_receives_full_body(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+        seen: list[dict] = []
+
+        async def observer(body):
+            seen.append(body)
+
+        adapter._plugin_message_observers = [(observer, "triage")]
+        body = {"event_id": "Ev1", "event": {"type": "message", "channel": "D1"}}
+        asyncio.run(adapter._dispatch_plugin_message_observers(body))
+
+        assert seen == [body]
+
+    def test_message_observer_exception_does_not_propagate(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        async def boom(body):
+            raise RuntimeError("plugin bug")
+
+        adapter._plugin_message_observers = [(boom, "buggy_plugin")]
+        asyncio.run(adapter._dispatch_plugin_message_observers({"event": {}}))
 
     def test_plugin_exception_does_not_propagate_to_slack(self):
         """A misbehaving plugin handler must NOT crash slack_bolt's dispatch.
@@ -429,7 +511,7 @@ class TestSlackAdapterPluginActionWiring:
              patch("gateway.status.release_scoped_lock"), \
              patch("hermes_cli.plugins.get_plugin_manager",
                    side_effect=RuntimeError("plugins broken")), \
-             patch("asyncio.create_task"):
+             patch("asyncio.create_task", side_effect=_discard_created_task):
             result = asyncio.run(adapter.connect())
 
         assert result is True
