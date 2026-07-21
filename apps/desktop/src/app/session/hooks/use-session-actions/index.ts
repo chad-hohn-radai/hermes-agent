@@ -58,7 +58,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -768,6 +768,7 @@ export function useSessionActions({
           : $messages.get()
 
         let prefetchApplied = false
+        let prefetchedMessageCount = 0
         let prefetchedStoredSessionId: string | null = null
 
         // REST transcript prefetch and the gateway resume RPC are independent
@@ -794,17 +795,24 @@ export function useSessionActions({
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
 
-        // Wait for BOTH the prefetch and the resume RPC before painting.
-        // Painting the prefetch eagerly (then painting again after the RPC
-        // lands) causes the transcript to re-render twice — the "re-renders
-        // a few times as it loads" bug. By awaiting both concurrently then
-        // painting once, the wall time is still max(prefetch, resume) but
-        // the DOM only updates a single time.
-        let prefetchedResult: { messages: SessionMessage[]; session_id?: string } | null = null
-
         try {
           if (prefetchPromise) {
-            prefetchedResult = await prefetchPromise
+            const storedMessages = await prefetchPromise
+
+            if (isCurrentResume()) {
+              const previousMessages = resumedSameSelectedSession
+                ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
+                : $messages.get()
+
+              localSnapshot = reconcileAuthoritativeMessages(storedMessages.messages, previousMessages)
+              prefetchApplied = true
+              prefetchedMessageCount = storedMessages.messages.length
+              prefetchedStoredSessionId = storedMessages.session_id || storedSessionId
+
+              if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
+                setMessages(localSnapshot)
+              }
+            }
           }
         } catch {
           // Non-fatal: gateway resume below can still hydrate the session.
@@ -814,17 +822,6 @@ export function useSessionActions({
 
         if (!isCurrentResume()) {
           return
-        }
-
-        // Build the final message list from whichever source is authoritative.
-        if (prefetchedResult && isCurrentResume()) {
-          const previousMessages = resumedSameSelectedSession
-            ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
-            : $messages.get()
-
-          localSnapshot = reconcileAuthoritativeMessages(prefetchedResult.messages, previousMessages)
-          prefetchApplied = true
-          prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
         }
 
         const currentMessages = $messages.get()
@@ -841,19 +838,11 @@ export function useSessionActions({
 
         const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
 
-        // When the REST prefetch already painted the transcript and the
-        // resume RPC returns no live projection (no inflight/queued turn),
-        // the prefetch is the display authority — the REST endpoint
-        // serves the complete persisted conversation, while the RPC
-        // returns the runtime's compressed-context projection which can
-        // differ in count and content. Re-painting from the RPC projection
-        // causes the transcript to tear down and rebuild a second time
-        // (the "re-renders multiple times on load" bug). Skip the reconcile
-        // entirely; the prefetch already has the right messages.
         const preferredMessages =
           prefetchApplied &&
           prefetchMatchesResumedSession &&
-          !hasLiveProjection
+          !hasLiveProjection &&
+          resumed.messages.length <= prefetchedMessageCount
             ? localSnapshot
             : (() => {
                 const previousMessages = resumedSameSelectedSession
@@ -901,15 +890,6 @@ export function useSessionActions({
           }),
           storedSessionId
         )
-
-        // Paint the final transcript in a single setMessages call.
-        // updateSessionState stages into the cache + schedules a RAF flush
-        // via syncSessionStateToView, but that flush is deferred + mocked
-        // in tests. This direct call ensures the transcript paints exactly
-        // once, after both the prefetch and resume RPC have landed.
-        if (!chatMessageArraysEquivalent($messages.get(), messagesForView)) {
-          setMessages(messagesForView)
-        }
       } catch (err) {
         if (!isCurrentResume()) {
           return
