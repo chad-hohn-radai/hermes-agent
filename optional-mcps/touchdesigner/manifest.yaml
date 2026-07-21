@@ -70,7 +70,13 @@ tools:
 
 post_install: |
   This entry connects to the twozero plugin's MCP server, which runs INSIDE
-  TouchDesigner (2025.32280+). One-time setup in TD:
+  TouchDesigner (2025.32280+). TouchDesigner is Windows/macOS only — there is
+  no Linux build. On a Linux Hermes host, TD must run on another machine:
+  make twozero's port reachable from Hermes (it binds localhost, so forward
+  it on the TD machine) and edit the url in mcp_servers.touchdesigner to
+  point at that machine's IP.
+
+  One-time setup in TD:
 
     1. Download https://www.404zero.com/pisang/twozero.tox
     2. Drag twozero.tox into the TD network editor and click Install.

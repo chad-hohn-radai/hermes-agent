@@ -4,7 +4,7 @@ description: "Control a running TouchDesigner instance via twozero MCP — creat
 version: 1.2.0
 author: kshitijk4poor
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [macos, windows]
 metadata:
   hermes:
     tags: [TouchDesigner, MCP, twozero, creative-coding, real-time-visuals, generative-art, audio-reactive, VJ, installation, GLSL]
@@ -28,7 +28,15 @@ metadata:
 Hermes Agent -> MCP (Streamable HTTP) -> twozero.tox (port 40404) -> TD Python
 ```
 
+**TouchDesigner runs on Windows and macOS only — there is no Linux build**, so
+the standard localhost workflow cannot work on Linux. (A Hermes host can still
+drive TD on ANOTHER machine by pointing the `mcp_servers.touchdesigner` url at
+that machine's IP, but TD itself must live on Windows/macOS and twozero binds
+localhost by default — the TD machine has to forward the port.)
+
 36 native tools. Free plugin (no payment/license — confirmed April 2026).
+TouchDesigner Non-Commercial is free too (requires a free derivative.ca
+account to activate).
 Context-aware (knows selected OP, current network).
 Hub health check: `GET http://localhost:40404/mcp` returns JSON with instance PID, project name, TD version.
 
