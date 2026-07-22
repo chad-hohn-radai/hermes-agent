@@ -231,7 +231,6 @@ export const en: Translations = {
       'nav.skills': 'Open skills',
       'nav.messaging': 'Open messaging',
       'nav.artifacts': 'Open artifacts',
-      'nav.webhooks': 'Open webhooks',
       'nav.cron': 'Open scheduled jobs',
       'nav.agents': 'Open agents',
       'session.new': 'New session',
@@ -1186,7 +1185,6 @@ export const en: Translations = {
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
       skills: { title: 'Capabilities', detail: 'Skills, tools, and MCP servers' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
-      webhooks: { title: 'Webhooks', detail: 'Receive HTTP events that trigger agent runs' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
     sectionEntries: {
@@ -1717,7 +1715,6 @@ export const en: Translations = {
       'new-session': 'New session',
       skills: 'Capabilities',
       messaging: 'Messaging',
-      webhooks: 'Webhooks',
       artifacts: 'Artifacts'
     },
     searchAria: 'Search sessions',
@@ -2323,6 +2320,8 @@ export const en: Translations = {
       running: count => `${count} running`,
       cron: 'Cron',
       openCron: 'Open cron jobs',
+      webhooks: 'Webhooks',
+      openWebhooks: 'Open webhooks',
       starmap: 'Memory Graph',
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',

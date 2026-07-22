@@ -94,7 +94,6 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'nav.skills', category: 'navigation', defaults: [] },
   { id: 'nav.messaging', category: 'navigation', defaults: [] },
   { id: 'nav.artifacts', category: 'navigation', defaults: [] },
-  { id: 'nav.webhooks', category: 'navigation', defaults: [] },
   { id: 'nav.cron', category: 'navigation', defaults: [] },
   { id: 'nav.agents', category: 'navigation', defaults: [] },
 

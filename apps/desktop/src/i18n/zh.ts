@@ -1379,7 +1379,6 @@ export const zh: Translations = {
       settings: { title: '设置', detail: '配置 Hermes 桌面端' },
       skills: { title: '技能与工具', detail: '启用技能、工具集与提供方' },
       messaging: { title: '消息平台', detail: '配置 Telegram、Slack、Discord 等' },
-      webhooks: { title: 'Webhook', detail: '接收触发智能体运行的 HTTP 事件' },
       artifacts: { title: '产物', detail: '浏览生成的输出' }
     },
     sectionEntries: {
@@ -2497,6 +2496,8 @@ export const zh: Translations = {
       running: count => `${count} 个运行中`,
       cron: '排程',
       openCron: '打开排程任务',
+      webhooks: 'Webhook',
+      openWebhooks: '打开 Webhook',
       starmap: '记忆图谱',
       openStarmap: '打开记忆图谱',
       turnRunning: '运行中',
