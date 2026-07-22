@@ -208,3 +208,8 @@ test('chatWindowWebPreferences passes the preload path through and keeps the har
   assert.equal(prefs.sandbox, true)
   assert.equal(prefs.nodeIntegration, false)
 })
+
+test('chatWindowWebPreferences enables offscreen rendering only when requested', () => {
+  assert.equal(chatWindowWebPreferences('/tmp/preload.cjs').offscreen, false)
+  assert.equal(chatWindowWebPreferences('/tmp/preload.cjs', { offscreen: true }).offscreen, true)
+})

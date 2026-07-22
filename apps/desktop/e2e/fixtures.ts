@@ -33,6 +33,7 @@ import { installErrorBannerGuard } from './test'
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
 const RELEASE_ROOT = path.join(DESKTOP_ROOT, 'release')
+const E2E_HEADLESS = process.env.HERMES_DESKTOP_E2E_HEADLESS === '1'
 
 // ─── Credential stripping (matches launch.spec.ts) ──────────────────────
 
@@ -609,7 +610,7 @@ export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFi
   // window, but the DOM can be ready before that fires. Poll until the
   // window is actually visible so interactions (click, screenshot) don't
   // hit a hidden surface.
-  if (app) {
+  if (app && !E2E_HEADLESS) {
     const deadline = Date.now() + timeoutMs
 
     while (Date.now() < deadline) {

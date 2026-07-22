@@ -21,7 +21,7 @@ const SESSION_WINDOW_MIN_HEIGHT = 620
 // blurred/occluded windows. A streaming chat app must keep painting in the
 // background, so every chat window opts out. The preload path is injected
 // because it depends on the Electron entry's __dirname.
-function chatWindowWebPreferences(preloadPath: string) {
+function chatWindowWebPreferences(preloadPath: string, { offscreen = false }: { offscreen?: boolean } = {}) {
   return {
     preload: preloadPath,
     contextIsolation: true,
@@ -29,7 +29,11 @@ function chatWindowWebPreferences(preloadPath: string) {
     sandbox: true,
     nodeIntegration: false,
     devTools: true,
-    backgroundThrottling: false
+    backgroundThrottling: false,
+    // macOS has no Cage-equivalent compositor. Playwright's offscreen renderer
+    // keeps desktop E2E windows out of the user's workspace while preserving a
+    // real Chromium surface for interaction and screenshots.
+    offscreen
   }
 }
 

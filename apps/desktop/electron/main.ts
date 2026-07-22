@@ -215,6 +215,10 @@ if (USER_DATA_OVERRIDE) {
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
+// Linux E2E uses Cage. macOS has no equivalent isolated compositor, so the
+// visual runner opts into Electron's offscreen renderer instead. This is test
+// infrastructure only: normal desktop launches remain headed.
+const E2E_HEADLESS = process.env.HERMES_DESKTOP_E2E_HEADLESS === '1'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
 // Truthful macOS kernel major (Tahoe = 25). Product version lies (16 vs 26) per
@@ -8093,7 +8097,7 @@ function focusWindow(win) {
     win.restore()
   }
 
-  if (!win.isVisible()) {
+  if (!E2E_HEADLESS && !win.isVisible()) {
     win.show()
   }
 
@@ -8123,7 +8127,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     // themes/context.tsx, so the window appears already themed.
     show: false,
     backgroundColor: getWindowBackgroundColor(),
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH, { offscreen: E2E_HEADLESS })
   })
 
   if (IS_MAC) {
@@ -8131,7 +8135,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
   }
 
   win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) {
+    if (!E2E_HEADLESS && !win.isDestroyed()) {
       win.show()
     }
   })
@@ -8200,7 +8204,7 @@ function createInstanceWindow() {
     icon,
     show: false,
     backgroundColor: getWindowBackgroundColor(),
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH, { offscreen: E2E_HEADLESS })
   })
 
   instanceWindows.add(win)
@@ -8210,7 +8214,7 @@ function createInstanceWindow() {
   }
 
   win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) {
+    if (!E2E_HEADLESS && !win.isDestroyed()) {
       win.show()
     }
   })
@@ -8405,7 +8409,7 @@ function createWindow() {
     // both keep `backgroundThrottling: false` — the chat transcript streams via
     // a requestAnimationFrame-gated flush that Chromium pauses for blurred
     // windows, stalling the live answer until refocus. See session-windows.ts.
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH, { offscreen: E2E_HEADLESS })
   })
 
   if (IS_MAC) {
@@ -8432,7 +8436,7 @@ function createWindow() {
   }
 
   mainWindow.once('ready-to-show', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    if (!E2E_HEADLESS && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
     }
 
@@ -8462,7 +8466,7 @@ function createWindow() {
 
   // Under Playright testing, instantly show the window.
   // `ready-to-show` doesn't fire in some testing envs.
-  if (process.env.TEST_WORKER_INDEX !== undefined) {
+  if (!E2E_HEADLESS && process.env.TEST_WORKER_INDEX !== undefined) {
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
       mainWindow.show()
     }
