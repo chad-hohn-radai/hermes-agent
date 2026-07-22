@@ -1459,6 +1459,8 @@ export const en: Translations = {
     fieldDescriptionPlaceholder: 'What this webhook does (optional)',
     fieldEvents: 'Events',
     fieldEventsPlaceholder: 'comma-separated, leave empty for all',
+    fieldSkills: 'Skills',
+    fieldSkillsPlaceholder: 'comma-separated skill names (optional)',
     fieldDeliver: 'Deliver to',
     fieldDeliverOnly: 'Deliver only',
     fieldDeliverOnlyHint: 'Skip the agent, deliver payload directly',

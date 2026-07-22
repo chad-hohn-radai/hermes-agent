@@ -1216,6 +1216,8 @@ export interface Translations {
     fieldDescriptionPlaceholder: string
     fieldEvents: string
     fieldEventsPlaceholder: string
+    fieldSkills: string
+    fieldSkillsPlaceholder: string
     fieldDeliver: string
     fieldDeliverOnly: string
     fieldDeliverOnlyHint: string

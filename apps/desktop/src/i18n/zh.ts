@@ -1649,6 +1649,8 @@ export const zh: Translations = {
     fieldDescriptionPlaceholder: '此 Webhook 的用途（可选）',
     fieldEvents: '事件',
     fieldEventsPlaceholder: '以逗号分隔，留空表示全部',
+    fieldSkills: '技能',
+    fieldSkillsPlaceholder: '以逗号分隔的技能名称（可选）',
     fieldDeliver: '投递到',
     fieldDeliverOnly: '仅投递',
     fieldDeliverOnlyHint: '跳过智能体，直接投递载荷',

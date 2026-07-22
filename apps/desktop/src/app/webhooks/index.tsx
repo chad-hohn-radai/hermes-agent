@@ -89,6 +89,7 @@ export function WebhooksView(props: React.ComponentProps<'section'>) {
   const [deliver, setDeliver] = useState('log')
   const [deliverOnly, setDeliverOnly] = useState(false)
   const [prompt, setPrompt] = useState('')
+  const [skills, setSkills] = useState('')
   const [creating, setCreating] = useState(false)
   const [created, setCreated] = useState<CreatedWebhook | null>(null)
 
@@ -169,6 +170,7 @@ export function WebhooksView(props: React.ComponentProps<'section'>) {
     setDeliver('log')
     setDeliverOnly(false)
     setPrompt('')
+    setSkills('')
   }, [])
 
   const closeCreate = useCallback(() => {
@@ -195,13 +197,19 @@ export function WebhooksView(props: React.ComponentProps<'section'>) {
         .map(e => e.trim())
         .filter(Boolean)
 
+      const skillsList = skills
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+
       const res = await createWebhook({
         deliver,
         deliver_only: deliverOnly,
         description: description.trim() || undefined,
         events: eventsList.length ? eventsList : undefined,
         name: name.trim(),
-        prompt: prompt.trim() || undefined
+        prompt: prompt.trim() || undefined,
+        skills: skillsList.length ? skillsList : undefined
       })
 
       notify({ kind: 'success', message: w.created })
@@ -213,7 +221,7 @@ export function WebhooksView(props: React.ComponentProps<'section'>) {
     } finally {
       setCreating(false)
     }
-  }, [deliver, deliverOnly, description, events, loadWebhooks, name, prompt, resetForm, w])
+  }, [deliver, deliverOnly, description, events, loadWebhooks, name, prompt, resetForm, skills, w])
 
   const handleToggle = useCallback(
     async (subName: string, nextEnabled: boolean) => {
@@ -427,6 +435,14 @@ export function WebhooksView(props: React.ComponentProps<'section'>) {
                   value={events}
                 />
               </Field>
+              <Field htmlFor="webhook-skills" label={w.fieldSkills}>
+                <Input
+                  id="webhook-skills"
+                  onChange={e => setSkills(e.target.value)}
+                  placeholder={w.fieldSkillsPlaceholder}
+                  value={skills}
+                />
+              </Field>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Field htmlFor="webhook-deliver" label={w.fieldDeliver}>
                   <Select onValueChange={setDeliver} value={deliver}>
@@ -533,6 +549,16 @@ function WebhookRow({
             ))
           )}
         </div>
+
+        {sub.skills.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-1">
+            {sub.skills.map(skill => (
+              <Badge key={skill} variant="outline">
+                {skill}
+              </Badge>
+            ))}
+          </div>
+        )}
 
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="min-w-0 flex-1 truncate font-mono">{sub.url}</span>
