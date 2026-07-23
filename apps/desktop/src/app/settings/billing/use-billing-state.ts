@@ -193,7 +193,7 @@ export function deriveBillingView(
   if (!billing.logged_in || subscription?.logged_in === false) {
     return {
       notice: {
-        action: { label: 'Open portal ↗', url: billing.portal_url ?? subscription?.portal_url ?? FALLBACK_PORTAL_URL },
+        action: { label: 'Open portal', url: billing.portal_url ?? subscription?.portal_url ?? FALLBACK_PORTAL_URL },
         message: 'Run /portal in the TUI or open the Nous portal to connect your account.',
         title: 'Connect your Nous account'
       },
@@ -296,7 +296,7 @@ function refusalNotice(refusal: BillingRefusal): BillingNoticeView {
   const portalUrl = resolved.action.type === 'portal' ? resolved.action.url : undefined
 
   return {
-    action: portalUrl ? { label: 'Open portal ↗', url: portalUrl } : undefined,
+    action: portalUrl ? { label: 'Open portal', url: portalUrl } : undefined,
     message: resolved.message,
     title: resolved.title,
     tone: 'warn'
@@ -312,7 +312,7 @@ function noCardNotice(billing: BillingStateResponse): BillingNoticeView | undefi
   }
 
   return {
-    action: { label: 'Add card ↗', url: billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL },
+    action: { label: 'Add card', url: billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL },
     message: 'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.',
     title: 'No payment method on file',
     tone: 'warn'
@@ -411,7 +411,7 @@ function derivePlanCard(
     caption,
     // No in-app action → always hand off to the portal so the user isn't stranded.
     link: {
-      label: 'Adjust plan ↗',
+      label: 'Adjust plan',
       url: buildManageSubscriptionUrl(subscription, subscription?.portal_url ?? billing.portal_url)
     },
     pending,
@@ -448,7 +448,7 @@ function pendingTransition(
 
 /**
  * The plans-grid catalog. Each card's state depends on its order relative to the
- * current tier: current = inert marker; higher = "Choose ↗" opening the portal with
+ * current tier: current = inert marker; higher = "Choose" opening the portal with
  * the tier pre-selected; lower = an in-app "Downgrade" (chargeless, scheduled via the
  * gateway). The already-scheduled downgrade target renders as an inert "Scheduled"
  * marker; other lower tiers stay actionable (picking one reschedules). With no active
@@ -523,7 +523,7 @@ function derivePlanTiers(
 
     return {
       ...base,
-      action: { label: 'Choose ↗', url: buildManageSubscriptionUrl(subscription, manageBase, tier.tier_id) },
+      action: { label: 'Choose', url: buildManageSubscriptionUrl(subscription, manageBase, tier.tier_id) },
       state: 'upgrade'
     }
   })
@@ -555,19 +555,9 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
 }
 
 function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
-  if (!billing.card) {
-    // The no-card blocker is already spelled out by the page-level warn banner
-    // (noCardNotice); repeating it here — emoji and all — just clutters the row,
-    // so keep the plain "what buying does" line and let the controls sit disabled.
-    return {
-      action: { disabled: true, label: 'Buy' },
-      chips: billing.charge_presets.map(amount => ({ disabled: true, label: formatMoney(amount) })),
-      description: 'A single charge on your card, added to your balance today.',
-      id: 'buy_credits',
-      title: 'Buy credits now'
-    }
-  }
-
+  // Policy blockers (role / CLI billing off / remote spending off) outrank the
+  // missing card: adding a card would not unlock buying, so those name their own
+  // reason and never show a card call-to-action.
   const disabledReason = buyCreditsDisabledReason(billing)
 
   if (disabledReason) {
@@ -575,6 +565,19 @@ function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
       description: disabledReason,
       id: 'buy_credits',
       title: 'Buy credits now'
+    }
+  }
+
+  if (!billing.card) {
+    // A cluster of dead preset/amount/Buy controls can't explain itself — swap it
+    // for the reason and the one action that fixes it (the page-level warn banner
+    // still names the blocker up top).
+    return {
+      action: { label: 'Add card', url: billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL },
+      description: 'A single charge on your card, added to your balance today.',
+      id: 'buy_credits',
+      title: 'Buy credits now',
+      value: 'No card on file'
     }
   }
 
@@ -594,6 +597,23 @@ const AUTO_REFILL_GENERIC = 'Keep your balance topped up when it drops below you
 
 function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
   const autoReload = billing.auto_reload
+  const portalUrl = billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL
+
+  // Auto-refill charges the saved card, so while none is on file "off" isn't a
+  // choice the user can change — name the blocker on the row and offer the fix
+  // instead of a dead Manage button or a link-less portal caption. An enabled
+  // config (card removed later) falls through to its normal row so it can still
+  // be managed / turned off.
+  if (!billing.card && !autoReload?.enabled) {
+    return {
+      action: { label: 'Add card', url: portalUrl },
+      caption: 'Needs a card on file before it can be turned on.',
+      description: AUTO_REFILL_GENERIC,
+      id: 'auto_reload',
+      pill: { label: autoReload ? 'Off' : EMPTY_BILLING_VALUE, tone: 'muted' },
+      title: 'Refill when low'
+    }
+  }
 
   if (!autoReload) {
     return {
@@ -608,7 +628,8 @@ function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
 
   if (!autoReload.enabled) {
     return {
-      caption: 'Turn on auto-refill from the portal',
+      action: { label: 'Turn on', url: portalUrl },
+      caption: 'Turn on auto-refill from the portal.',
       description: AUTO_REFILL_GENERIC,
       id: 'auto_reload',
       pill: { label: 'Off', tone: 'muted' },
@@ -621,10 +642,9 @@ function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
   if (autoReload.card?.kind === 'distinct') {
     const { brand, last4 } = autoReload.card
     const cardLabel = brand && last4 ? `${capitalize(brand)} ••${last4}` : 'a different card'
-    const portalUrl = billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL
 
     return {
-      action: { label: 'Reconcile ↗', url: portalUrl },
+      action: { label: 'Reconcile', url: portalUrl },
       caption: `Auto-refill charges ${cardLabel} — reconcile on the portal`,
       description: AUTO_REFILL_GENERIC,
       id: 'auto_reload',
