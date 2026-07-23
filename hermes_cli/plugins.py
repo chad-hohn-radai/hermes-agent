@@ -1068,6 +1068,11 @@ class PluginContext:
                 f"Plugin '{self.manifest.name}' tried to register a Slack "
                 "message observer with a non-callable callback."
             )
+        if not inspect.iscoroutinefunction(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Slack "
+                "message observer that is not async."
+            )
         self._manager._slack_message_observers.append(
             (callback, self.manifest.name)
         )

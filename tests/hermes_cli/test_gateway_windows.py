@@ -150,6 +150,139 @@ def test_write_task_script_anchors_cmd_cd_at_hermes_home(monkeypatch, tmp_path):
     assert f"cd /d {gateway_windows._quote_cmd_script_arg(str(project))}" not in content
 
 
+
+def test_restart_runs_configured_preflight_before_stopping_gateway(monkeypatch):
+    """An incompatible release must not replace a known-good gateway."""
+    calls: list[str] = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_run_configured_gateway_preflight",
+        lambda: calls.append("preflight"),
+    )
+    monkeypatch.setattr(gateway_windows, "stop", lambda: calls.append("stop"))
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_absent", lambda **_kw: True)
+    monkeypatch.setattr(gateway_windows.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        gateway_windows,
+        "start",
+        lambda *, _preflight_verified=False: calls.append(("start", _preflight_verified)),
+    )
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **_kw: True)
+
+    gateway_windows.restart()
+
+    assert calls == ["preflight", "stop", ("start", True)]
+
+
+
+
+
+def test_start_runs_preflight_before_spawning_gateway(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(
+        gateway_windows,
+        "_run_configured_gateway_preflight",
+        lambda: calls.append("preflight"),
+    )
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: calls.append("spawn") or 123)
+    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda _detail: None)
+
+    gateway_windows.start()
+
+    assert calls == ["preflight", "spawn"]
+
+
+def test_restart_preserves_gateway_when_preflight_fails(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+
+    def fail_preflight():
+        raise RuntimeError("observer missing")
+
+    monkeypatch.setattr(gateway_windows, "_run_configured_gateway_preflight", fail_preflight)
+    monkeypatch.setattr(gateway_windows, "stop", lambda: calls.append("stop"))
+
+    with pytest.raises(RuntimeError, match="observer missing"):
+        gateway_windows.restart()
+
+    assert calls == []
+
+
+def test_gateway_preflight_reads_configured_local_script(monkeypatch, tmp_path):
+    home = tmp_path / "hermes-home"
+    script = home / "scripts" / "preflight.py"
+    sentinel = tmp_path / "preflight-ran"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"gateway": {"preflight_script": str(script)}},
+    )
+
+    gateway_windows._run_configured_gateway_preflight()
+
+    assert sentinel.read_text(encoding="utf-8") == "ran"
+
+
+
+def test_gateway_preflight_nonzero_exit_blocks_replacement(monkeypatch, tmp_path):
+    home = tmp_path / "hermes-home"
+    script = home / "scripts" / "preflight.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("raise SystemExit(7)\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"gateway": {"preflight_script": str(script)}},
+    )
+
+    with pytest.raises(RuntimeError, match=r"preflight failed \(7\)"):
+        gateway_windows._run_configured_gateway_preflight()
+
+
+def test_gateway_preflight_timeout_blocks_replacement(monkeypatch, tmp_path):
+    home = tmp_path / "hermes-home"
+    script = home / "scripts" / "preflight.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("import time\ntime.sleep(1)\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"gateway": {"preflight_script": str(script)}},
+    )
+    monkeypatch.setattr(gateway_windows, "_GATEWAY_PREFLIGHT_TIMEOUT_S", 0.01)
+
+    with pytest.raises(RuntimeError, match="preflight timed out"):
+        gateway_windows._run_configured_gateway_preflight()
+
+
+def test_gateway_preflight_refuses_a_script_outside_hermes_home(monkeypatch, tmp_path):
+    home = tmp_path / "hermes-home"
+    script = tmp_path / "outside.py"
+    home.mkdir()
+    script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"gateway": {"preflight_script": str(script)}},
+    )
+
+    with pytest.raises(RuntimeError, match="must name an existing file under"):
+        gateway_windows._run_configured_gateway_preflight()
+
+
 def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
     startup_entry = tmp_path / "Startup" / "Hermes_Gateway_alice.cmd"

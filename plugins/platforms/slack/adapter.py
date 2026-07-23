@@ -10,7 +10,9 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+from copy import deepcopy
 import inspect
+
 import json
 import logging
 import os
@@ -67,6 +69,7 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 logger = logging.getLogger(__name__)
 
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+_PLUGIN_MESSAGE_OBSERVER_TIMEOUT_SECONDS = 2.0
 
 
 async def _read_error_text_limited(
@@ -838,6 +841,69 @@ class SlackAdapter(BasePlatformAdapter):
         # Allow at least this long after (re)connect before treating a missing
         # first ping/pong as evidence of a wedged transport.
         self._socket_first_ping_grace_s = 60.0
+
+    async def _dispatch_plugin_message_observers(self, body: dict) -> None:
+        """Dispatch passive plugin observers before normal Slack authorization.
+
+        Observers receive an isolated copy of the Slack Bolt envelope, may only
+        perform bounded intake work, and cannot alter normal gateway routing.
+        Current registrations are resolved for every event so forced plugin
+        rediscovery or disablement takes effect without a gateway reconnect.
+        """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            observers = get_plugin_manager().get_slack_message_observers()
+        except Exception as exc:  # pragma: no cover - plugin discovery failure
+            logger.error("[Slack] Could not load plugin message observers: %s", exc)
+            return
+        if not observers:
+            return
+
+        async def invoke(callback: Any, plugin_name: str) -> None:
+            try:
+                # Plugin observers are intentionally passive. They never share
+                # the mutable envelope used by normal authorization/routing.
+                result = callback(deepcopy(body))
+                if not inspect.isawaitable(result):
+                    logger.warning(
+                        "[Slack] Plugin '%s' message observer must be async; ignoring result",
+                        plugin_name,
+                    )
+                    return
+                await result
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:  # isolate even SystemExit/KeyboardInterrupt from plugins
+                logger.exception(
+                    "[Slack] Plugin '%s' message observer failed: %s",
+                    plugin_name,
+                    exc,
+                )
+
+        tasks = [
+            asyncio.create_task(invoke(callback, plugin_name))
+            for callback, plugin_name in observers
+        ]
+        try:
+            _done, pending = await asyncio.wait(
+                tasks,
+                timeout=_PLUGIN_MESSAGE_OBSERVER_TIMEOUT_SECONDS,
+            )
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        if pending:
+            logger.warning(
+                "[Slack] Timed out %d plugin message observer(s) after %.1fs",
+                len(pending),
+                _PLUGIN_MESSAGE_OBSERVER_TIMEOUT_SECONDS,
+            )
+            for task in pending:
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -1695,6 +1761,10 @@ class SlackAdapter(BasePlatformAdapter):
             # Register message event handler
             @self._app.event("message")
             async def handle_message_event(event, say, body):
+                # Passive observers run first so permitted intake plugins can
+                # record eligible peer DMs/MPIMs without granting those peers
+                # general Hermes chat access.
+                await self._dispatch_plugin_message_observers(body)
                 await self._handle_slack_message(event, body)
 
             # Handle app_mention explicitly. In some Slack app configurations,
