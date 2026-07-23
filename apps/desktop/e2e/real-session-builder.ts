@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import * as path from 'node:path'
+import { env } from 'node:process'
 import { createInterface } from 'node:readline'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -64,7 +65,15 @@ export class RealSessionBuilder {
   private closed = false
 
   private constructor(hermesHome: string) {
-    this.child = spawn('python', ['-m', 'tui_gateway.entry'], {
+    // The Nix dev shell supplies a fully provisioned Python on PATH rather
+    // than a project .venv. Everywhere else (including CI), uv selects the
+    // environment created by the prerequisite `uv sync`.
+    const usingNixDevShell = Boolean(env.HERMES_PYTHON_SRC_ROOT)
+    const command = usingNixDevShell ? 'python' : 'uv'
+    const args = usingNixDevShell
+      ? ['-m', 'tui_gateway.entry']
+      : ['run', '--no-sync', 'python', '-m', 'tui_gateway.entry']
+    this.child = spawn(command, args, {
       cwd: REPO_ROOT,
       env: {
         ...process.env,
