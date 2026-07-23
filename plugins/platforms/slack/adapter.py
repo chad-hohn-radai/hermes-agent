@@ -1895,12 +1895,15 @@ class SlackAdapter(BasePlatformAdapter):
             # caught and logged, and slack_bolt still sees a clean ack.
             try:
                 from hermes_cli.plugins import get_plugin_manager
-                _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
+                _plugin_manager = get_plugin_manager()
+                _plugin_handlers = _plugin_manager.get_slack_action_handlers()
+                _plugin_view_handlers = _plugin_manager.get_slack_view_handlers()
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning(
-                    "[Slack] Could not load plugin action handlers: %s", e,
+                    "[Slack] Could not load plugin interactive handlers: %s", e,
                 )
                 _plugin_handlers = []
+                _plugin_view_handlers = []
 
             # Closure factory — keeps the wrapper's signature limited to
             # ``(ack, body, action)``. slack_bolt inspects listener
@@ -1934,6 +1937,43 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.info(
                     "[Slack] Wired %d plugin action handler(s)",
                     len(_plugin_handlers),
+                )
+
+            # Register plugin-provided modal view handlers. The public plugin
+            # API accepts only typed ``view_submission`` / ``view_closed``
+            # constraints, so each callback is scoped to its declared modal.
+            # Keep the wrapper signature to slack_bolt's recognised
+            # ``(ack, body, view)`` arguments for the same reason as action
+            # wrappers above.
+            def _make_view_wrapper(cb, plugin_name):
+                async def _wrapped(ack, body, view):
+                    try:
+                        await cb(ack, body, view)
+                    except asyncio.CancelledError:
+                        raise
+                    except BaseException as exc:  # pragma: no cover - defensive
+                        logger.error(
+                            "[Slack] Plugin '%s' view handler raised: %s",
+                            plugin_name, exc, exc_info=True,
+                        )
+                        try:
+                            await ack()
+                        except Exception:
+                            pass
+                return _wrapped
+
+            for _view_matcher, _cb, _plugin_name in _plugin_view_handlers:
+                self._app.view(_view_matcher)(
+                    _make_view_wrapper(_cb, _plugin_name)
+                )
+                logger.debug(
+                    "[Slack] Registered plugin view handler %s (from %s)",
+                    _view_matcher, _plugin_name,
+                )
+            if _plugin_view_handlers:
+                logger.info(
+                    "[Slack] Wired %d plugin view handler(s)",
+                    len(_plugin_view_handlers),
                 )
 
             # Bring up the handler and watchdog atomically. ``_running`` only
