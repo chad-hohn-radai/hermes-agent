@@ -157,6 +157,38 @@ describe('toChatMessages', () => {
 
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
   })
+
+  it('omits persisted verification nudges and standalone compaction handoffs', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'real user turn', timestamp: 1 },
+      { role: 'assistant', content: 'real assistant reply', timestamp: 2 },
+      {
+        role: 'user',
+        content: '[CONTEXT COMPACTION — REFERENCE ONLY] agent-only handoff',
+        timestamp: 3,
+      },
+      {
+        role: 'system',
+        content: '[System: You edited code in this turn, but the workspace does not have fresh passing verification evidence yet.]',
+        timestamp: 4,
+      },
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual(['real user turn', 'real assistant reply'])
+  })
+
+  it('keeps a real tail reply that follows a merged compaction handoff', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content:
+          '[CONTEXT COMPACTION — REFERENCE ONLY] agent-only handoff\n--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---\nreal tail reply',
+        timestamp: 1,
+      },
+    ])
+
+    expect(chatMessageText(message)).toBe('real tail reply')
+  })
 })
 
 describe('renderMediaTags', () => {

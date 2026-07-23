@@ -193,6 +193,14 @@ export function mergeFinalAssistantText(parts: ChatMessagePart[], finalText: str
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+const COMPACTION_PREFIXES = [
+  '[CONTEXT COMPACTION — REFERENCE ONLY]',
+  '[CONTEXT COMPACTION - REFERENCE ONLY]',
+  '[CONTEXT SUMMARY]:',
+]
+const COMPACTION_END_MARKER =
+  '--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---'
+const VERIFICATION_NUDGE_PREFIX = '[System: You edited code in this turn, but the workspace does not have '
 
 function textFromUnknown(value: unknown, depth = 0): string {
   if (typeof value === 'string') {
@@ -248,6 +256,35 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   const refs = [...new Set(Array.from(attachedContext.matchAll(CONTEXT_REF_RE)).map(match => match[0]))]
 
   return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
+}
+
+/**
+ * Strip persisted agent scaffolding from the desktop transcript.
+ *
+ * Compaction handoffs are model context, not user-authored chat. The compressor
+ * can prepend one to a real tail message, in which case preserve only that
+ * message after its explicit boundary marker.
+ */
+function transcriptContent(content: string): string | null {
+  const leading = content.trimStart()
+
+  if (leading.startsWith(VERIFICATION_NUDGE_PREFIX)) {
+    return null
+  }
+
+  if (!COMPACTION_PREFIXES.some(prefix => leading.startsWith(prefix))) {
+    return content
+  }
+
+  const markerIndex = content.indexOf(COMPACTION_END_MARKER)
+
+  if (markerIndex < 0) {
+    return null
+  }
+
+  const remainder = content.slice(markerIndex + COMPACTION_END_MARKER.length).trimStart()
+
+  return remainder || null
 }
 
 const STREAM_PART: Record<'reasoning' | 'text', (text: string) => ChatMessagePart> = {
@@ -831,7 +868,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const content = message.content || message.text || message.context || message.name
-    const displayContent = displayContentForMessage(message.role, content)
+    const displayContent = transcriptContent(displayContentForMessage(message.role, content))
     const parts: ChatMessagePart[] = []
 
     const reasoning =
