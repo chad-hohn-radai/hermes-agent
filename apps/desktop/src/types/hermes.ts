@@ -1,3 +1,5 @@
+import type { GatewaySessionRuntimeInfo } from '@hermes/shared/gateway-contracts'
+
 export interface ConfigFieldSchema {
   category?: string
   description?: string
@@ -470,27 +472,7 @@ export interface SessionResumeResponse {
   status?: string
 }
 
-export interface SessionRuntimeInfo {
-  approval_mode?: 'manual' | 'off' | 'smart'
-  branch?: string
-  config_warning?: string
-  credential_warning?: string
-  cwd?: string
-  desktop_contract?: number
-  fast?: boolean
-  install_warning?: string
-  model?: string
-  personality?: string
-  provider?: string
-  reasoning_effort?: string
-  running?: boolean
-  service_tier?: string
-  skills?: Record<string, string[]> | string[]
-  tools?: Record<string, string[]>
-  usage?: Partial<UsageStats>
-  version?: string
-  yolo?: boolean
-}
+export type SessionRuntimeInfo = GatewaySessionRuntimeInfo
 
 export interface UsageStats {
   calls: number
