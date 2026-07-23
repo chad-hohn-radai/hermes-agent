@@ -254,6 +254,21 @@ def _connect_with_recording_app(
     return result, registered_actions
 
 
+class TestRegisterSlackMessageObserverAPI:
+    """A plugin can receive a passive raw Slack message envelope."""
+
+    def test_async_observer_is_queued_for_gateway_dispatch(self):
+        manager, context = _make_ctx()
+
+        async def observer(body):  # pragma: no cover - invoked by adapter tests
+            assert body["event"]["channel"] == "C0BDD8M51UN"
+
+        context.register_slack_message_observer(observer)
+
+        observers = manager.get_slack_message_observers()
+        assert observers == [(observer, "test_plugin")]
+
+
 class TestSlackAdapterPluginActionWiring:
     """connect() must register plugin-supplied action handlers on AsyncApp."""
 
