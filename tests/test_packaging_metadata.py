@@ -56,6 +56,24 @@ def test_faster_whisper_is_not_a_base_dependency():
     assert any(dep.startswith("faster-whisper") for dep in voice_extra)
 
 
+def test_bundled_wakeword_model_ships_in_source_builds():
+    """The default "hey hermes" wake word only works if the model ships.
+
+    ``tools/wakewords/hey_hermes.onnx`` is a binary asset (not a Python
+    module), so setuptools-built installs (uv/pip from the repo) only carry it
+    when ``[tool.setuptools.package-data]`` declares it. Without that,
+    ``wake_word.openwakeword.model: hey_hermes`` resolves to a missing file on
+    installed copies.
+    """
+    # The asset must exist for the globs to match.
+    on_disk = list((REPO_ROOT / "tools" / "wakewords").glob("*.onnx"))
+    assert on_disk, "expected a bundled wake-word model under tools/wakewords/"
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    tools_pkg_data = data["tool"]["setuptools"]["package-data"].get("tools", [])
+    assert any(g.endswith(".onnx") for g in tools_pkg_data), (
+        "pyproject package-data 'tools' must ship wakewords/*.onnx"
+    )
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in
 # 1.0.1. Anything below that lets a malformed Host header desync
 # ``request.url.path`` from the dispatched ASGI path, bypassing path-based
