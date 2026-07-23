@@ -313,7 +313,11 @@ function noCardNotice(billing: BillingStateResponse): BillingNoticeView | undefi
 
   return {
     action: { label: 'Add card', url: billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL },
-    message: 'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.',
+    // An already-enabled auto-refill keeps running its saved payment method, so
+    // the banner must not claim it is disabled in that state.
+    message: billing.auto_reload?.enabled
+      ? 'Buying top-up credits stays disabled until a card is on file. Add one on the portal.'
+      : 'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.',
     title: 'No payment method on file',
     tone: 'warn'
   }
@@ -603,8 +607,10 @@ function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
   // choice the user can change — name the blocker on the row and offer the fix
   // instead of a dead Manage button or a link-less portal caption. An enabled
   // config (card removed later) falls through to its normal row so it can still
-  // be managed / turned off.
-  if (!billing.card && !autoReload?.enabled) {
+  // be managed / turned off. Policy blockers outrank the missing card here too
+  // (same precedence as the buy row): a member or a spending-disabled org falls
+  // through to the plain portal rows below, never an Add card call-to-action.
+  if (!billing.card && !autoReload?.enabled && !buyCreditsDisabledReason(billing)) {
     return {
       action: { label: 'Add card', url: portalUrl },
       caption: 'Needs a card on file before it can be turned on.',
@@ -775,7 +781,11 @@ function topupCreditsValue(billing: BillingStateResponse, usage?: UsageModelData
 }
 
 function buyCreditsDisabledReason(billing: BillingStateResponse): null | string {
-  if (!billing.is_admin) {
+  // Capability, not the legacy role check: `is_admin` is OWNER/ADMIN only and
+  // deprecated for gating (a FINANCE_ADMIN charges via can_change_plan). The
+  // gateway sends can_change_plan; fall back to is_admin when it's absent,
+  // mirroring agent/billing_view.py.
+  if (!(billing.can_change_plan ?? billing.is_admin)) {
     return resolveRefusal({ kind: 'role_required', message: '' }).message
   }
 

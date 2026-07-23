@@ -675,8 +675,8 @@ describe('BillingSettings', () => {
     expect(
       screen.getByText('Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.')
     ).toBeTruthy()
-    // Banner + buy row + auto-refill row each carry the fix.
-    expect(screen.getAllByRole('button', { name: /Add card/ }).length).toBeGreaterThan(0)
+    // Banner + buy row + auto-refill row each carry the fix — exactly three.
+    expect(screen.getAllByRole('button', { name: /Add card/ })).toHaveLength(3)
   })
 
   it('does not show the no-card notice when a card is on file', async () => {

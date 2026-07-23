@@ -183,6 +183,19 @@ describe('deriveBillingView', () => {
     })
   })
 
+  it('drops the auto-refill claim from the banner while auto-refill is actually running', () => {
+    const view = deriveBillingView(
+      okBilling({
+        ...postTrainBillingState,
+        auto_reload: { ...postTrainBillingState.auto_reload, enabled: true },
+        card: null
+      }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    expect(view.notice?.message).toBe('Buying top-up credits stays disabled until a card is on file. Add one on the portal.')
+  })
+
   it('keeps an enabled auto-refill config manageable even after the card disappears', () => {
     const view = deriveBillingView(
       okBilling({
@@ -208,6 +221,38 @@ describe('deriveBillingView', () => {
     expect(view.topupRow?.action).toBeUndefined()
     expect(view.topupRow?.value).toBeUndefined()
     expect(view.topupRow?.description).not.toContain('single charge')
+  })
+
+  it('applies the same policy precedence to the no-card auto-refill row', () => {
+    const view = deriveBillingView(
+      okBilling({ ...postTrainBillingState, can_charge: false, card: null }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    // Policy-blocked → the plain off row (portal caption), never Add card.
+    expect(view.refillRow?.action).toMatchObject({ label: 'Turn on' })
+    expect(view.refillRow?.caption).toBe('Turn on auto-refill from the portal.')
+  })
+
+  it('gates the buy row on can_change_plan, not the deprecated is_admin role check', () => {
+    // A FINANCE_ADMIN: legacy is_admin=false but server-granted capability true.
+    const view = deriveBillingView(
+      okBilling({ ...postTrainBillingState, can_change_plan: true, card: null, is_admin: false }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    expect(view.topupRow).toMatchObject({ action: { label: 'Add card' }, value: 'No card on file' })
+  })
+
+  it('falls back to is_admin when the server omits can_change_plan', () => {
+    const view = deriveBillingView(
+      okBilling({ ...postTrainBillingState, can_change_plan: undefined, card: null, is_admin: false }),
+      okSubscription(postTrainSubscriptionState)
+    )
+
+    // Legacy payloads keep the old member gating.
+    expect(view.topupRow?.action).toBeUndefined()
+    expect(view.topupRow?.description).toContain('admin')
   })
 
   it('links the off-with-card auto-refill row to the portal it names', () => {
