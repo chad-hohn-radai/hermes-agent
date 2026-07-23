@@ -2991,6 +2991,12 @@ DEFAULT_CONFIG = {
         # crash/restart, as before.
         "delivery_ledger": True,
 
+        # Optional path to a local Python release-readiness check executed before
+        # Windows gateway start/restart. The path must resolve beneath
+        # ``<HERMES_HOME>/scripts``; an invalid or failing check prevents a
+        # replacement launch. Empty disables the hook.
+        "preflight_script": "",
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

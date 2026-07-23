@@ -1040,6 +1040,47 @@ class PluginContext:
             action_id,
         )
 
+    # -- Slack message observer registration -------------------------------
+
+    def register_slack_message_observer(self, callback: Callable) -> None:
+        """Register an async observer for raw Slack message event envelopes.
+
+        The Slack adapter invokes observers before its own authorization and
+        mention-policy filtering. Observers receive the complete Slack Bolt
+        ``body`` envelope, must persist any required state promptly, and must
+        not block on slow downstream work. The adapter bounds each dispatch and
+        isolates failures so one plugin cannot interrupt normal message routing.
+
+        Callback signature::
+
+            async def observer(body) -> None:
+                event = body.get("event") or {}
+                ...
+
+        Args:
+            callback: Async callable receiving one Slack Bolt event body.
+
+        Raises:
+            ValueError: if *callback* is not callable.
+        """
+        if not callable(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Slack "
+                "message observer with a non-callable callback."
+            )
+        if not inspect.iscoroutinefunction(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Slack "
+                "message observer that is not async."
+            )
+        self._manager._slack_message_observers.append(
+            (callback, self.manifest.name)
+        )
+        logger.debug(
+            "Plugin %s registered Slack message observer",
+            self.manifest.name,
+        )
+
     # -- hook registration --------------------------------------------------
 
     # -- auxiliary task registration ---------------------------------------
@@ -1271,6 +1312,10 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Raw Slack message observers registered by plugins. Each entry is
+        # ``(callback, plugin_name)``; the Slack adapter invokes them with the
+        # full Slack Bolt body before its own message policy filtering.
+        self._slack_message_observers: List[tuple] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -1300,6 +1345,7 @@ class PluginManager:
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
+            self._slack_message_observers.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
@@ -1972,6 +2018,16 @@ class PluginManager:
         :meth:`PluginContext.register_slack_action_handler`.
         """
         return list(self._slack_action_handlers)
+
+    def get_slack_message_observers(self) -> List[tuple]:
+        """Return plugin-registered raw Slack message observers.
+
+        Each entry is a ``(callback, plugin_name)`` tuple. The Slack adapter
+        invokes observers before normal message policy filtering, with the full
+        Slack Bolt event envelope. Plugins register observers through
+        :meth:`PluginContext.register_slack_message_observer`.
+        """
+        return list(self._slack_message_observers)
 
     # -----------------------------------------------------------------------
     # Introspection
