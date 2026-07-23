@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -196,6 +197,67 @@ class TestRegisterSlackActionHandlerAPI:
         assert {h[2] for h in handlers} == {"plug_a", "plug_b"}
 
 
+class TestRegisterSlackViewHandlerAPI:
+    """Plugins can register typed Slack modal submission handlers."""
+
+    def test_typed_view_submission_is_queued(self):
+        mgr, ctx = _make_ctx()
+
+        async def cb(ack, body, view):  # pragma: no cover - not invoked here
+            await ack()
+
+        matcher = {"type": "view_submission", "callback_id": "triage_edit_submit"}
+        ctx.register_slack_view_handler(matcher, cb)
+
+        handlers = mgr.get_slack_view_handlers()
+        assert handlers == [(matcher, cb, "test_plugin")]
+
+    @pytest.mark.parametrize(
+        "matcher",
+        [
+            "triage_edit_submit",
+            {"type": "view_submission"},
+            {"type": "message_action", "callback_id": "triage_edit_submit"},
+            {"type": "view_submission", "callback_id": ""},
+        ],
+    )
+    def test_malformed_matcher_is_rejected(self, matcher):
+        _mgr, ctx = _make_ctx()
+
+        async def cb(ack, body, view):  # pragma: no cover - not invoked here
+            await ack()
+
+        with pytest.raises(ValueError, match="view handler matcher"):
+            ctx.register_slack_view_handler(matcher, cb)
+
+    def test_synchronous_callback_is_rejected(self):
+        _mgr, ctx = _make_ctx()
+
+        def sync_cb(ack, body, view):
+            return None
+
+        with pytest.raises(ValueError, match="must be async"):
+            ctx.register_slack_view_handler(
+                {"type": "view_submission", "callback_id": "triage_edit_submit"},
+                sync_cb,
+            )
+
+    def test_getter_returns_a_copy(self):
+        mgr, ctx = _make_ctx()
+
+        async def cb(ack, body, view):  # pragma: no cover - not invoked here
+            await ack()
+
+        ctx.register_slack_view_handler(
+            {"type": "view_submission", "callback_id": "triage_edit_submit"},
+            cb,
+        )
+        snapshot = mgr.get_slack_view_handlers()
+        snapshot.clear()
+
+        assert len(mgr.get_slack_view_handlers()) == 1
+
+
 class TestRegisterSlackMessageObserverRegistration:
 
     def test_async_observer_is_queued(self):
@@ -247,6 +309,7 @@ def _connect_with_recording_app(
     adapter: SlackAdapter,
     *,
     plugin_handlers: list,
+    plugin_view_handlers: list | None = None,
     plugin_message_observers: list | None = None,
 ) -> tuple[bool, list]:
     """Run adapter.connect() with mocks and return (result, registered_actions).
@@ -256,11 +319,18 @@ def _connect_with_recording_app(
     wired up.
     """
     registered_actions: list = []  # list of (action_id, callback)
+    registered_views: list = []  # list of (matcher, callback)
     registered_events: dict[str, object] = {}
 
     def mock_action(action_id):
         def decorator(fn):
             registered_actions.append((action_id, fn))
+            return fn
+        return decorator
+
+    def mock_view(matcher):
+        def decorator(fn):
+            registered_views.append((matcher, fn))
             return fn
         return decorator
 
@@ -279,6 +349,7 @@ def _connect_with_recording_app(
     mock_app.event = mock_event
     mock_app.command = mock_command
     mock_app.action = mock_action
+    mock_app.view = mock_view
     mock_app.client = AsyncMock()
 
     mock_web_client = AsyncMock()
@@ -291,9 +362,11 @@ def _connect_with_recording_app(
 
     fake_mgr = MagicMock()
     fake_mgr.get_slack_action_handlers.return_value = plugin_handlers
+    fake_mgr.get_slack_view_handlers.return_value = plugin_view_handlers or []
     fake_mgr.get_slack_message_observers.return_value = plugin_message_observers or []
     adapter._test_plugin_manager = fake_mgr
     adapter._test_registered_events = registered_events
+    adapter._test_registered_views = registered_views
 
     with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
          patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
@@ -376,6 +449,79 @@ class TestSlackAdapterPluginActionWiring:
         assert "hermes_deny" in action_ids
         # …and the plugin's action_id was added.
         assert "inbox_sweep_approve" in action_ids
+
+    def test_plugin_view_submission_handler_wired_into_app(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        async def submit_handler(ack, body, view):  # pragma: no cover - not invoked
+            await ack()
+
+        matcher = {"type": "view_submission", "callback_id": "triage_edit_submit"}
+        result, _registered = _connect_with_recording_app(
+            adapter,
+            plugin_handlers=[],
+            plugin_view_handlers=[(matcher, submit_handler, "slack-triage-actions")],
+        )
+
+        assert result is True
+        assert matcher in [
+            registered_matcher
+            for registered_matcher, _callback in adapter._test_registered_views
+        ]
+        wrapped = next(
+            callback
+            for registered_matcher, callback in adapter._test_registered_views
+            if registered_matcher == matcher
+        )
+        assert tuple(inspect.signature(wrapped).parameters) == ("ack", "body", "view")
+
+    @pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit])
+    def test_plugin_view_base_exception_does_not_escape_slack_dispatch(self, error_type):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        async def broken_handler(ack, body, view):
+            raise error_type("plugin failure")
+
+        matcher = {"type": "view_submission", "callback_id": "triage_edit_submit"}
+        _result, _registered = _connect_with_recording_app(
+            adapter,
+            plugin_handlers=[],
+            plugin_view_handlers=[(matcher, broken_handler, "buggy-plugin")],
+        )
+        wrapped = next(
+            callback
+            for registered_matcher, callback in adapter._test_registered_views
+            if registered_matcher == matcher
+        )
+        ack = AsyncMock()
+
+        asyncio.run(wrapped(ack, {"type": "view_submission"}, {"callback_id": "triage_edit_submit"}))
+
+        ack.assert_awaited_once_with()
+
+    def test_plugin_view_cancellation_propagates_for_gateway_lifecycle(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        async def cancelled_handler(ack, body, view):
+            raise asyncio.CancelledError()
+
+        matcher = {"type": "view_submission", "callback_id": "triage_edit_submit"}
+        _result, _registered = _connect_with_recording_app(
+            adapter,
+            plugin_handlers=[],
+            plugin_view_handlers=[(matcher, cancelled_handler, "cancelled-plugin")],
+        )
+        wrapped = next(
+            callback
+            for registered_matcher, callback in adapter._test_registered_views
+            if registered_matcher == matcher
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(wrapped(AsyncMock(), {"type": "view_submission"}, {}))
 
     def test_no_plugin_handlers_does_not_break_connect(self):
         """An empty plugin handler list is the common case — must be a no-op."""

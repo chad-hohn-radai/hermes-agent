@@ -1040,6 +1040,58 @@ class PluginContext:
             action_id,
         )
 
+    # -- Slack modal view-handler registration -----------------------------
+
+    def register_slack_view_handler(
+        self,
+        matcher: dict[str, str],
+        callback: Callable,
+    ) -> None:
+        """Register an async Slack modal view handler from a plugin.
+
+        View handlers are intentionally constrained to typed Slack Bolt view
+        matchers so a plugin cannot accidentally claim every interactive view.
+        The callback receives ``(ack, body, view)`` and must acknowledge the
+        submission promptly.
+
+        Args:
+            matcher: A mapping with ``type`` set to ``"view_submission"`` or
+                ``"view_closed"`` and a non-empty ``callback_id``.
+            callback: Async callable receiving ``(ack, body, view)``.
+
+        Raises:
+            ValueError: if the matcher is malformed or callback is not async.
+        """
+        if not callable(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Slack "
+                "view handler with a non-callable callback."
+            )
+        if not inspect.iscoroutinefunction(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' Slack view handlers must be async."
+            )
+        if not isinstance(matcher, dict):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' Slack view handler matcher "
+                "must be a typed dict."
+            )
+        view_type = matcher.get("type")
+        callback_id = matcher.get("callback_id")
+        if view_type not in {"view_submission", "view_closed"} or not isinstance(callback_id, str) or not callback_id.strip():
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' Slack view handler matcher must "
+                "contain a supported view type and non-empty callback_id."
+            )
+        self._manager._slack_view_handlers.append(
+            (dict(matcher), callback, self.manifest.name)
+        )
+        logger.debug(
+            "Plugin %s registered Slack view handler: %s",
+            self.manifest.name,
+            matcher,
+        )
+
     # -- Slack message observer registration -------------------------------
 
     def register_slack_message_observer(self, callback: Callable) -> None:
@@ -1312,6 +1364,10 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Slack modal view handlers registered by plugins. Entries are
+        # ``(matcher, callback, plugin_name)`` where matcher is a typed
+        # ``view_submission`` or ``view_closed`` Slack Bolt constraint dict.
+        self._slack_view_handlers: List[tuple] = []
         # Raw Slack message observers registered by plugins. Each entry is
         # ``(callback, plugin_name)``; the Slack adapter invokes them with the
         # full Slack Bolt body before its own message policy filtering.
@@ -1345,6 +1401,7 @@ class PluginManager:
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
+            self._slack_view_handlers.clear()
             self._slack_message_observers.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
@@ -2018,6 +2075,15 @@ class PluginManager:
         :meth:`PluginContext.register_slack_action_handler`.
         """
         return list(self._slack_action_handlers)
+
+    def get_slack_view_handlers(self) -> List[tuple]:
+        """Return plugin-registered typed Slack modal view handlers.
+
+        Each entry is a ``(matcher, callback, plugin_name)`` tuple consumed by
+        the Slack adapter at connect time. Plugins register them via
+        :meth:`PluginContext.register_slack_view_handler`.
+        """
+        return list(self._slack_view_handlers)
 
     def get_slack_message_observers(self) -> List[tuple]:
         """Return plugin-registered raw Slack message observers.
