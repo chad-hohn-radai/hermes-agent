@@ -2633,6 +2633,16 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     # ~350ms `mcp` SDK import, which holds the GIL against the web_server
     # import and delays the READY sentinel; _make_agent's bounded
     # wait_for_mcp_discovery covers a server still connecting at first turn.
+    # A management-only Dashboard explicitly disables MCP for the whole
+    # process (see HERMES_MCP_DISABLED below) — skip discovery entirely;
+    # --no-mcp wins over the #58733 deferral below, since leaving discovery
+    # armed would hand start_server a deferred start that re-enables it in a
+    # process the operator explicitly disabled it in.
+    from utils import env_var_enabled
+
+    if env_var_enabled("HERMES_MCP_DISABLED"):
+        return False
+
     # A standalone (non-Desktop) dashboard may sit idle and unvisited for days
     # (#58733): it arms discovery instead and the first /api/ws client fires it.
     desktop = os.environ.get("HERMES_DESKTOP") == "1"
@@ -2665,6 +2675,11 @@ def cmd_dashboard(args):
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
+    if getattr(args, "no_mcp", False):
+        # Internal process-wide invariant. The user-facing control is the
+        # explicit CLI flag; MCP discovery and connection entry points enforce
+        # the marker again so later chat/reload paths cannot bypass it.
+        os.environ["HERMES_MCP_DISABLED"] = "1"
     _ssh_owner_nonce = _dashboard_validate_serve_args(args, _headless_backend, _token_file)
     _dashboard_sanitize_desktop_env(_headless_backend)
 
