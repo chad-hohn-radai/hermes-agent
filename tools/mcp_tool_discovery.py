@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from typing import Dict, List, Optional, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish
+from tools.mcp_tool_common import _core, _mcp_process_disabled, _parse_boolish
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -146,6 +146,10 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
 
     See #50394.
     """
+    if _mcp_process_disabled():
+        logger.info("Lazy MCP connection disabled for this process")
+        return False
+
     with _core._lock:
         key = _resolve_server_key(server_name)
         server = _core._servers.get(key)
@@ -373,6 +377,10 @@ def _log_summary(prefix: str, names, **lazy) -> None:
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     """Connect ``{name: config}`` servers and register their tools; idempotent for connected
     names, ``enabled: false`` skipped without disconnecting. Returns every MCP tool name."""
+    if _mcp_process_disabled():
+        logger.info("MCP registration disabled for this process")
+        return []
+
     if not _core._ensure_mcp_sdk():
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
@@ -438,6 +446,10 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
     list simply don't match); ``None`` spawns every configured server. Used by
     ``hermes -z -t <toolsets>`` to skip cold-starting servers the caller doesn't need (10-60s
     each); it only affects which servers start, not which names ``-t`` validation can see."""
+    if _mcp_process_disabled():
+        logger.info("MCP discovery disabled for this process")
+        return []
+
     servers = _config._load_mcp_config()
     if not servers:
         logger.debug("No MCP servers configured")

@@ -8,7 +8,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
-from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
+from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _mcp_process_disabled, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
@@ -373,6 +373,8 @@ class MCPServerRunMixin:
 
     async def start(self, config: dict):
         """Create the background Task and wait until ready (or failed)."""
+        if _mcp_process_disabled():
+            raise RuntimeError("MCP connections are disabled for this process")
         self._task = asyncio.ensure_future(self.run(config))
         try:
             await self._ready.wait()

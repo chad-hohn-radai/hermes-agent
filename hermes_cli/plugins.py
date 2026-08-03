@@ -846,6 +846,41 @@ class PluginContext:
         ``pattern=`` or you swallow the core button flows."""
         self.register_platform_handler("telegram", factory)
 
+    def register_slack_view_handler(self, matcher: dict[str, str], callback: Callable) -> None:
+        """Register a typed async Slack modal view handler.
+
+        Matchers are deliberately limited to one ``view_submission`` or ``view_closed`` callback id
+        so a plugin cannot claim every view event."""
+        if not callable(callback):
+            raise self._refuse("a Slack view handler with a non-callable callback")
+        if not inspect.iscoroutinefunction(callback):
+            raise ValueError(f"Plugin '{self.manifest.name}' Slack view handlers must be async.")
+        if not isinstance(matcher, dict):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' Slack view handler matcher must be a typed dict.")
+        view_type = matcher.get("type")
+        callback_id = matcher.get("callback_id")
+        if (view_type not in {"view_submission", "view_closed"}
+                or not isinstance(callback_id, str) or not callback_id.strip()):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' Slack view handler matcher must contain a "
+                "supported view type and non-empty callback_id.")
+        self._manager._slack_view_handlers.append((dict(matcher), callback, self.manifest.name))
+        logger.debug("Plugin %s registered Slack view handler: %s", self.manifest.name, matcher)
+
+    def register_slack_message_observer(self, callback: Callable) -> None:
+        """Register a passive async observer for raw Slack message envelopes.
+
+        Observers run before the normal Slack authorization and mention gates. Dispatch is
+        time-bounded, failure-isolated, and receives a defensive copy so intake plugins cannot
+        change normal gateway routing."""
+        if not callable(callback):
+            raise self._refuse("a Slack message observer with a non-callable callback")
+        if not inspect.iscoroutinefunction(callback):
+            raise ValueError(f"Plugin '{self.manifest.name}' message observers must be async.")
+        self._manager._slack_message_observers.append((callback, self.manifest.name))
+        logger.debug("Plugin %s registered Slack message observer", self.manifest.name)
+
     @_serialized_replacement
     def register_auxiliary_task(
         self, key: str, *, display_name: str, description: str,
@@ -1146,6 +1181,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
         self._approval_transports: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
+        # Typed modal view handlers registered by plugins.
+        self._slack_view_handlers: List[tuple] = []
+        # Passive raw-message observers registered by plugins.
+        self._slack_message_observers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
         # registration order while emitters never block; per-worker chain depth caps mutual emitters.
@@ -1427,6 +1466,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def get_slack_action_handlers(self) -> List[tuple]:
         """``(action_id, callback, plugin_name)`` tuples for the Slack adapter to wire at connect."""
         return list(self._slack_action_handlers)
+
+    def get_slack_view_handlers(self) -> List[tuple]:
+        """Return plugin-registered typed Slack modal view handlers."""
+        return list(self._slack_view_handlers)
+
+    def get_slack_message_observers(self) -> List[tuple]:
+        """Return plugin-registered raw Slack message observers."""
+        return list(self._slack_message_observers)
 
     def get_platform_handler_factories(self, platform: str) -> List[tuple]:
         """``(factory, plugin_name)`` tuples for one platform; adapters call ``factory(native,

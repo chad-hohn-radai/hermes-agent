@@ -2516,8 +2516,19 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     # ~350ms `mcp` SDK import, which holds the GIL against the web_server
     # import and delays the READY sentinel; _make_agent's bounded
     # wait_for_mcp_discovery covers a server still connecting at first turn.
-    mcp_discovery_after_bind = headless_backend and os.environ.get("HERMES_DESKTOP") == "1"
-    if not mcp_discovery_after_bind:
+    # A management-only Dashboard explicitly skips this process owner, and
+    # --no-mcp wins over the deferral: leaving it True would hand start_server a
+    # deferred start that re-enables discovery in a process the operator
+    # explicitly disabled it in.
+    from utils import env_var_enabled
+
+    mcp_process_disabled = env_var_enabled("HERMES_MCP_DISABLED")
+    mcp_discovery_after_bind = (
+        headless_backend
+        and os.environ.get("HERMES_DESKTOP") == "1"
+        and not mcp_process_disabled
+    )
+    if not mcp_process_disabled and not mcp_discovery_after_bind:
         try:
             from hermes_cli.mcp_startup import start_background_mcp_discovery
 
@@ -2542,6 +2553,11 @@ def cmd_dashboard(args):
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
+    if getattr(args, "no_mcp", False):
+        # Internal process-wide invariant. The user-facing control is the
+        # explicit CLI flag; MCP discovery and connection entry points enforce
+        # the marker again so later chat/reload paths cannot bypass it.
+        os.environ["HERMES_MCP_DISABLED"] = "1"
     _ssh_owner_nonce = _dashboard_validate_serve_args(args, _headless_backend, _token_file)
     _dashboard_sanitize_desktop_env(_headless_backend)
 
