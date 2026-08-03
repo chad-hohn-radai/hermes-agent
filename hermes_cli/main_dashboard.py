@@ -883,6 +883,8 @@ def _route_named_profile_dashboard(
     opts out; Desktop pool backends (HERMES_DESKTOP=1) stay per-profile. Returns normally when no
     routing applies.
     """
+    from utils import env_var_enabled
+
     try:
         from hermes_cli.profiles import get_active_profile_name
         _launch_profile = get_active_profile_name()
@@ -915,7 +917,10 @@ def _route_named_profile_dashboard(
         (_token_file, ["--ssh-session-token-file", _token_file]),
         (args.no_open, ["--no-open"]),
         (getattr(args, "insecure", False), ["--insecure"]),
-        (getattr(args, "skip_build", False), ["--skip-build"])):
+        (getattr(args, "skip_build", False), ["--skip-build"]),
+        # Read the marker, not args: cmd_dashboard has already normalised
+        # --no-mcp into the process-wide env invariant by this point.
+        (env_var_enabled("HERMES_MCP_DISABLED"), ["--no-mcp"])):
         if enabled:
             reexec_argv.extend(extra)
     from tools.environments.local import build_subprocess_env
