@@ -121,6 +121,13 @@ _TRUE_WORDS = frozenset({"true", "1", "yes", "on"})
 _FALSE_WORDS = frozenset({"false", "0", "no", "off"})
 
 
+def _mcp_process_disabled() -> bool:
+    """Return whether this process is forbidden from owning MCP lifecycles."""
+    from utils import env_var_enabled
+
+    return env_var_enabled("HERMES_MCP_DISABLED")
+
+
 def _parse_boolish(value: Any, default: bool = True) -> bool:
     """Parse a bool-like config value with safe fallback."""
     if value is None:
