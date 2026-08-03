@@ -50,6 +50,8 @@ _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
+_GATEWAY_PREFLIGHT_CONFIG_PATH = "gateway.preflight_script"
+_GATEWAY_PREFLIGHT_TIMEOUT_S = 30
 
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
@@ -67,6 +69,67 @@ def _schtasks_encoding() -> str:
 def _assert_windows() -> None:
     if sys.platform != "win32":
         raise RuntimeError("gateway_windows is Windows-only")
+
+
+def _run_configured_gateway_preflight() -> None:
+    """Run the opt-in local release check before replacing a gateway."""
+    from hermes_cli.config import get_hermes_home, load_config_readonly
+
+    gateway_config = load_config_readonly().get("gateway", {})
+    configured = (
+        str(gateway_config.get("preflight_script") or "").strip()
+        if isinstance(gateway_config, dict)
+        else ""
+    )
+    if not configured:
+        return
+
+    candidate = Path(configured).expanduser()
+    if not candidate.is_absolute():
+        raise RuntimeError(
+            f"{_GATEWAY_PREFLIGHT_CONFIG_PATH} must be an absolute path"
+        )
+    try:
+        scripts_dir = (Path(get_hermes_home()) / "scripts").resolve()
+        script = candidate.resolve(strict=True)
+        script.relative_to(scripts_dir)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"{_GATEWAY_PREFLIGHT_CONFIG_PATH} must name an existing file under "
+            f"{Path(get_hermes_home()) / 'scripts'}"
+        ) from exc
+    if not script.is_file() or script.suffix.lower() != ".py":
+        raise RuntimeError(
+            f"{_GATEWAY_PREFLIGHT_CONFIG_PATH} must name a Python file under "
+            f"{scripts_dir}"
+        )
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_GATEWAY_PREFLIGHT_TIMEOUT_S,
+            creationflags=windows_hide_flags(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Gateway preflight timed out after {_GATEWAY_PREFLIGHT_TIMEOUT_S}s: "
+            f"{script}"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(f"Could not run gateway preflight {script}: {exc}") from exc
+
+    if result.returncode:
+        detail = "\n".join(
+            stream for stream in (result.stdout, result.stderr) if stream
+        ).strip() or "no output"
+        detail = detail.replace("\x00", " ")
+        raise RuntimeError(
+            f"Gateway preflight failed ({result.returncode}): {detail[-2000:]}"
+        )
 
 
 def _hermes_home() -> Path:
@@ -1222,9 +1285,11 @@ def status(deep: bool = False) -> None:
         print("\nTo install:\n  hermes gateway install")
 
 
-def start() -> None:
+def start(*, _preflight_verified: bool = False) -> None:
     """Start the gateway using the canonical detached Windows launch path."""
     _assert_windows()
+    if not _preflight_verified:
+        _run_configured_gateway_preflight()
     _print_start_attestation_warning()   # once: the LAST start's ✓ turned out to be false
     running_pids = _gateway_pids()
     if running_pids:
@@ -1382,6 +1447,7 @@ def restart() -> None:
     ``start()``'s "already running" guard sees the draining process and no-ops, and nothing
     replaces it when it exits (a silent outage). Fails loudly on either side."""
     _assert_windows()
+    _run_configured_gateway_preflight()
 
     stop()
 
@@ -1395,7 +1461,7 @@ def restart() -> None:
             )
 
     time.sleep(1.0)   # let Windows release the listening port
-    start()
+    start(_preflight_verified=True)
 
     if not _wait_for_gateway_ready(timeout_s=15.0):
         raise RuntimeError(

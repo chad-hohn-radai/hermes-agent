@@ -34,6 +34,10 @@ def _add_server_runtime_args(parser) -> None:
             "to that profile instead of routing to the machine-level server. "
             "Default behavior is unified: profile launches attach to (or start) "
             "ONE machine-level server and preselect the profile.")
+    parser.add_argument(
+        "--no-mcp", action="store_true",
+        help="Run this dashboard/backend as a management-only surface: MCP "
+            "discovery and connections are disabled for the entire process.")
     # Internal: set by the unified-launch re-exec to preselect the launching profile.
     parser.add_argument("--open-profile", dest="open_profile", default="", help=argparse.SUPPRESS)
     # Lifecycle flags win over the start-a-server flags (they exit first). No service
