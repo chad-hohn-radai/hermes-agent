@@ -2,6 +2,7 @@
 
 import asyncio
 import contextvars
+from copy import deepcopy
 import functools
 import inspect
 import json
@@ -59,6 +60,7 @@ except Exception:
 _HERMES_SLACK_USER_AGENT_PREFIX = f"HermesAgent/{_HERMES_VERSION}"
 
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+_PLUGIN_MESSAGE_OBSERVER_TIMEOUT_SECONDS = 2.0
 _BOOL_WORDS = frozenset({"1", "0", "true", "false", "yes", "no", "on", "off"})
 
 # Model picker Block Kit action IDs. The picker is a two-step drill-down:
@@ -976,6 +978,70 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_handler_started_monotonic: Optional[float] = None
 
+    async def _dispatch_plugin_message_observers(self, body: dict) -> None:
+        """Run passive plugin intake before normal Slack authorization.
+
+        Each observer receives an isolated body copy. Failures and timeouts are contained so
+        intake cannot alter or interrupt normal gateway routing.
+        """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            observers = get_plugin_manager().get_slack_message_observers()
+        except Exception as exc:  # pragma: no cover - defensive discovery guard
+            logger.error("[Slack] Could not load plugin message observers: %s", exc)
+            return
+        if not observers:
+            return
+
+        async def invoke(callback: Any, plugin_name: str) -> None:
+            try:
+                result = callback(deepcopy(body))
+                if not inspect.isawaitable(result):
+                    logger.warning(
+                        "[Slack] Plugin '%s' message observer must be async", plugin_name)
+                    return
+                await result
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                logger.exception(
+                    "[Slack] Plugin '%s' message observer failed: %s", plugin_name, exc)
+
+        def consume_task(task: asyncio.Task) -> None:
+            """Retrieve terminal state without waiting on cancellation-resistant plugins."""
+            try:
+                error = task.exception()
+            except asyncio.CancelledError:
+                return
+            except BaseException as exc:  # pragma: no cover - defensive task guard
+                logger.error("[Slack] Could not inspect plugin observer task: %s", exc)
+                return
+            if error is not None:
+                logger.error("[Slack] Plugin observer task failed: %s", error)
+
+        tasks = [
+            asyncio.create_task(invoke(callback, plugin_name))
+            for callback, plugin_name in observers
+        ]
+        try:
+            _done, pending = await asyncio.wait(
+                tasks, timeout=_PLUGIN_MESSAGE_OBSERVER_TIMEOUT_SECONDS)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+                task.add_done_callback(consume_task)
+            raise
+        if pending:
+            logger.warning(
+                "[Slack] Timed out %d plugin message observer(s) after %.1fs",
+                len(pending), _PLUGIN_MESSAGE_OBSERVER_TIMEOUT_SECONDS)
+            for task in pending:
+                task.cancel()
+                # Cancellation is cooperative. A broken plugin can suppress it, so observe
+                # completion later instead of defeating the timeout by awaiting the task here.
+                task.add_done_callback(consume_task)
+
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
         primary_client = getattr(self._app, "client", None) if self._app is not None else None
@@ -1464,8 +1530,12 @@ class SlackAdapter(BasePlatformAdapter):
 
             return _handler
 
-        def _listener_for(handler):
+        def _listener_for(handler, observe: bool = False):
             async def _listener(event, say, body):
+                # Passive observers run first so an intake plugin can record permitted peer DMs
+                # without granting those peers general Hermes chat access.
+                if observe:
+                    await self._dispatch_plugin_message_observers(body)
                 await handler(event, body)
 
             return _listener
@@ -1479,7 +1549,7 @@ class SlackAdapter(BasePlatformAdapter):
             ("reaction_removed", _reaction(True)),
             ("assistant_thread_started", self._handle_assistant_thread_lifecycle_event),
             ("assistant_thread_context_changed", self._handle_assistant_thread_lifecycle_event)):
-            self._app.event(event_type)(_listener_for(handler))
+            self._app.event(event_type)(_listener_for(handler, observe=event_type == "message"))
         # Catch-all ack: unacked envelopes count as failures and past 95%/60-min Slack disables
         # Event Subscriptions (ALL inbound). Registered AFTER all named handlers (first match wins).
         # Catch-all no-op ack for any other subscribed event type that Hermes has no listener for (e.g.
@@ -1536,6 +1606,7 @@ class SlackAdapter(BasePlatformAdapter):
         for _action_id in _MODEL_PICKER_ACTION_IDS:
             self._app.action(_action_id)(self._handle_model_picker_action)
         self._register_plugin_action_handlers()
+        self._register_plugin_view_handlers()
         # ctx.register_platform_handler("slack", ...) factories get the full
         # AsyncApp surface (event/action/command), wired before Socket Mode starts.
         self._wire_plugin_handlers(self._app)
@@ -1573,6 +1644,56 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Registered plugin action handler %s (from %s)", _action_id, _plugin_name)
         if _plugin_handlers:
             logger.info("[Slack] Wired %d plugin action handler(s)", len(_plugin_handlers))
+
+    def _register_plugin_view_handlers(self) -> None:
+        """Wire ``ctx.register_slack_view_handler`` callbacks. The wrapper signature stays limited
+        to Slack Bolt's recognised arguments, and ``ack`` is made idempotent so a plugin that acks
+        and then raises does not double-ack."""
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            _plugin_view_handlers = get_plugin_manager().get_slack_view_handlers()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("[Slack] Could not load plugin view handlers: %s", e)
+            _plugin_view_handlers = []
+
+        def _make_view_wrapper(cb, plugin_name):
+            async def _wrapped(ack, body, view):
+                acknowledged = False
+
+                async def ack_once(*args, **kwargs):
+                    nonlocal acknowledged
+                    if acknowledged:
+                        return None
+                    result = ack(*args, **kwargs)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    acknowledged = True
+                    return result
+
+                try:
+                    await cb(ack_once, body, view)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as exc:  # pragma: no cover - defensive
+                    logger.error(
+                        "[Slack] Plugin '%s' view handler raised: %s", plugin_name, exc,
+                        exc_info=True)
+                    if not acknowledged:
+                        try:
+                            await ack_once()
+                        except Exception:
+                            pass
+
+            return _wrapped
+
+        for _view_matcher, _cb, _plugin_name in _plugin_view_handlers:
+            self._app.view(_view_matcher)(_make_view_wrapper(_cb, _plugin_name))
+            logger.debug(
+                "[Slack] Registered plugin view handler %s (from %s)", _view_matcher, _plugin_name)
+        if _plugin_view_handlers:
+            logger.info(
+                "[Slack] Wired %d plugin view handler(s)", len(_plugin_view_handlers))
 
     @staticmethod
     def _new_web_client(token: str, proxy_url: Optional[str]) -> Any:

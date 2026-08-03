@@ -648,10 +648,29 @@ async def _token_auth_seam(request: Request, call_next):
 
     A registered token route is owned here — authenticate, attach the principal
     + ``token_authenticated`` so downstream gates skip enforcement. Non-token
-    routes pass through untouched.
+    routes pass through untouched. The MCP process-isolation gate below sits
+    outside every auth seam, so disabled routes always fail 409.
     """
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
     return await token_auth_middleware(request, call_next)
+
+
+@app.middleware("http")
+async def _mcp_process_isolation_gate(request: Request, call_next):
+    """Block the complete MCP HTTP surface in management-only processes."""
+    from utils import env_var_enabled
+
+    if env_var_enabled("HERMES_MCP_DISABLED") and request.url.path.startswith("/api/mcp"):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": (
+                    "MCP is disabled in this Dashboard process; use the "
+                    "canonical gateway or Hermes CLI for MCP operations."
+                )
+            },
+        )
+    return await call_next(request)
 
 
 _DASHBOARD_HEALTH_WINDOW_SECONDS = 300.0
