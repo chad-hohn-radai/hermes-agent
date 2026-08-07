@@ -274,9 +274,16 @@ class HermesTokenStorage:
     """Persist OAuth state as ``HERMES_HOME/mcp-tokens/<server_name>`` + ``.json`` (tokens),
     ``.client.json`` (client info), ``.meta.json`` (server metadata), ``.cimd-off`` (CIMD refused)."""
 
-    def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
+    def __init__(
+        self,
+        server_name: str,
+        *,
+        hermes_home: str | Path | None = None,
+        token_endpoint_auth_method: str | None = None,
+    ):
         self._server_name = _safe_filename(server_name)
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        self._token_endpoint_auth_method = token_endpoint_auth_method
 
     def _path(self, suffix: str) -> Path:
         return _get_token_dir(self._hermes_home) / f"{self._server_name}{suffix}"
@@ -341,12 +348,13 @@ class HermesTokenStorage:
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
     @staticmethod
-    def _coerce_secret_auth_method(data: dict) -> bool:
-        """Set ``client_secret_post`` when a secret is present but no method is: some DCR providers
+    def _coerce_secret_auth_method(data: dict, configured: str | None = None) -> bool:
+        """Set the token auth method when a secret is present but no method is: some DCR providers
         (Supabase) omit ``token_endpoint_auth_method``, the SDK defaults it to ``none`` and the
-        exchange fails without the secret."""
+        exchange fails without the secret. An explicitly configured ``configured`` method wins, so
+        a server needing ``client_secret_basic`` still works."""
         if data.get("client_secret") and data.get("token_endpoint_auth_method") in (None, "none", ""):
-            data["token_endpoint_auth_method"] = "client_secret_post"
+            data["token_endpoint_auth_method"] = configured or "client_secret_post"
             return True
         return False
 
@@ -354,14 +362,15 @@ class HermesTokenStorage:
         coerced: list[bool] = []
         info = self._load_model(
             self._client_info_path(), "OAuthClientInformationFull", "client info",
-            lambda data: coerced.append(self._coerce_secret_auth_method(data)))
+            lambda data: coerced.append(
+                self._coerce_secret_auth_method(data, self._token_endpoint_auth_method)))
         if info is not None and coerced[0]:
             _write_json(self._client_info_path(), _model_json(info))  # persist so later flows skip the coercion
         return info
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
         data = _model_json(client_info)
-        self._coerce_secret_auth_method(data)
+        self._coerce_secret_auth_method(data, self._token_endpoint_auth_method)
         _write_json(self._client_info_path(), data)
         logger.debug("OAuth client info saved for %s", self._server_name)
 
