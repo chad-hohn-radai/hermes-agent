@@ -83,6 +83,21 @@ def test_hermes_provider_subclass_exists():
     assert issubclass(_HERMES_PROVIDER_CLS, OAuthClientProvider)
 
 
+def test_manager_passes_configured_auth_method_to_storage(tmp_path, monkeypatch):
+    """Manager and direct build paths must preserve confidential DCR auth."""
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    provider = MCPOAuthManager().get_or_build_provider(
+        "confidential-server",
+        "https://mcp.example.com/mcp",
+        {"token_endpoint_auth_method": "client_secret_post"},
+    )
+
+    assert provider.context.storage._token_endpoint_auth_method == "client_secret_post"
+
+
 @pytest.mark.asyncio
 async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     """When the tokens file mtime changes, provider._initialized flips False.

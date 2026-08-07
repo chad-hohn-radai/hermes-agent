@@ -210,6 +210,40 @@ class TestHermesTokenStorage:
         assert any("Corrupt" in r.message for r in caplog.records)
         assert secret not in caplog.text
 
+    def test_set_client_info_applies_configured_auth_method_when_dcr_omits_it(
+        self, tmp_path, monkeypatch
+    ):
+        """A DCR secret must be usable when the response omits its auth method."""
+        from mcp.shared.auth import OAuthClientInformationFull
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage(
+            "confidential-server",
+            token_endpoint_auth_method="client_secret_post",
+        )
+        client_info = OAuthClientInformationFull.model_validate(
+            {
+                "client_id": "dcr-client",
+                "client_secret": "dcr-secret",
+                "redirect_uris": ["http://127.0.0.1:3337/callback"],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+            }
+        )
+
+        asyncio.run(storage.set_client_info(client_info))
+
+        # Assert the PERSISTED value only. ``set_client_info`` serializes via
+        # ``client_info.model_dump()`` and edits that detached dict, so the
+        # in-memory model is deliberately left untouched — and the persisted
+        # file is what the token exchange reads back. An earlier revision of
+        # this test also asserted ``client_info.token_endpoint_auth_method``,
+        # which only ever passed because the SDK defaulted that field to
+        # ``client_secret_post``; the default is now ``None``, so that
+        # assertion tested the SDK, not this fix.
+        saved = json.loads(storage._client_info_path().read_text(encoding="utf-8"))
+        assert saved["token_endpoint_auth_method"] == "client_secret_post"
+
 
 # ---------------------------------------------------------------------------
 # build_oauth_auth
