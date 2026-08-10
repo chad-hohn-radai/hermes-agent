@@ -2127,6 +2127,39 @@ def _claim_and_open_run(
     return run_id
 
 
+def _pending_handoff_source(
+    conn: sqlite3.Connection, task_id: str
+) -> Optional[tuple[int, int]]:
+    """Return ``(source_run_id, source_pid)`` while handoff exit is unobserved."""
+    row = conn.execute(
+        "SELECT id, outcome, metadata FROM task_runs "
+        "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or row["outcome"] != "reclaimed" or not row["metadata"]:
+        return None
+    try:
+        metadata = json.loads(row["metadata"])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(metadata, dict) or metadata.get("handoff") is not True:
+        return None
+    source_pid = metadata.get("worker_pid")
+    try:
+        source_pid = int(source_pid)
+    except (TypeError, ValueError):
+        return None
+    source_run_id = int(row["id"])
+    exited = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? "
+        "AND kind = 'handoff_source_exited' AND run_id = ? LIMIT 1",
+        (task_id, source_run_id),
+    ).fetchone()
+    if exited is not None:
+        return None
+    return source_run_id, source_pid
+
+
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
@@ -2150,6 +2183,18 @@ def claim_task(
             )
             _append_event(conn, task_id, "claim_rejected", {"reason": "parents_not_done"})
             return None
+        # A worker-initiated handoff records its source PID in the reclaimed run metadata.
+        # Refuse the target until that process has received the MCP response and exited; then
+        # record the observation and continue.
+        pending_handoff = _pending_handoff_source(conn, task_id)
+        if pending_handoff is not None:
+            source_run_id, source_pid = pending_handoff
+            if _pid_alive(source_pid):
+                return None
+            _append_event(
+                conn, task_id, "handoff_source_exited", {"source_pid": source_pid},
+                run_id=source_run_id,
+            )
         # Close a leaked prior run so the CAS below doesn't strand it.
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
@@ -2436,6 +2481,129 @@ def reclaim_task(
     # Operator intervention = fresh retry budget (own txn, runs after commit).
     _clear_failure_counter(conn, task_id)
     return True
+
+
+def handoff_running_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    source_profile: str,
+    target_profile: str,
+    reason: str,
+    comment_author: Optional[str] = None,
+    comment_body: Optional[str] = None,
+) -> bool:
+    """Atomically hand an active run to another profile without signalling it.
+
+    This is the worker-initiated counterpart to operator ``reclaim``. The
+    caller is still executing and must receive the handoff response before it
+    can exit, so this primitive optionally records the audit comment, closes
+    the exact active run, and requeues the task in one transaction without
+    calling :func:`_terminate_reclaimed_worker`.
+    """
+    source = _canonical_assignee(source_profile)
+    target = _canonical_assignee(target_profile)
+    if not source or not target:
+        raise ValueError("source_profile and target_profile are required")
+    if not reason or not reason.strip():
+        raise ValueError("reason is required")
+    if (comment_author is None) != (comment_body is None):
+        raise ValueError("comment_author and comment_body must be provided together")
+    if comment_author is not None and not comment_author.strip():
+        raise ValueError("comment_author must not be blank")
+    if comment_body is not None and not comment_body.strip():
+        raise ValueError("comment_body must not be blank")
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, assignee, current_run_id, claim_lock, worker_pid "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if (
+            row["status"] != "running"
+            or row["assignee"] != source
+            or row["current_run_id"] != int(expected_run_id)
+        ):
+            return False
+        run = conn.execute(
+            "SELECT profile, status, ended_at FROM task_runs "
+            "WHERE id = ? AND task_id = ?",
+            (int(expected_run_id), task_id),
+        ).fetchone()
+        if (
+            run is None
+            or run["profile"] != source
+            or run["status"] != "running"
+            or run["ended_at"] is not None
+        ):
+            return False
+        if row["worker_pid"] is None:
+            # The MCP call must belong to a dispatcher-spawned process. Its
+            # PID is also the exit barrier that prevents target overlap.
+            return False
+
+        if comment_author is not None and comment_body is not None:
+            now = int(time.time())
+            clean_author = comment_author.strip()
+            clean_body = comment_body.strip()
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, clean_author, clean_body, now),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "commented",
+                {"author": clean_author, "len": len(clean_body)},
+                run_id=int(expected_run_id),
+            )
+
+        metadata = {
+            "handoff": True,
+            "from_profile": source,
+            "to_profile": target,
+            "worker_pid": row["worker_pid"],
+            "termination_attempted": False,
+        }
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="reclaimed",
+            status="reclaimed",
+            error=f"worker_handoff: {reason.strip()}",
+            metadata=metadata,
+        )
+        if run_id != int(expected_run_id):
+            raise RuntimeError("active Kanban run changed during handoff")
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', assignee = ?, claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, consecutive_failures = 0, "
+            "last_failure_error = NULL WHERE id = ?",
+            (target, task_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "reclaimed",
+            {
+                "manual": False,
+                "handoff": True,
+                "reason": reason.strip(),
+                "from_profile": source,
+                "to_profile": target,
+                "prev_lock": row["claim_lock"],
+                "prev_pid": row["worker_pid"],
+                "termination_attempted": False,
+            },
+            run_id=run_id,
+        )
+        _append_event(conn, task_id, "assigned", {"assignee": target})
+        return True
 
 
 def reassign_task(

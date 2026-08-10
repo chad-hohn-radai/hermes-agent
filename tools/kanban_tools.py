@@ -493,6 +493,12 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
     """Full task state: row, parents, children, comments, runs, last 50 events."""
+    # Reads are not covered by _enforce_worker_task_ownership (mutations only), so scope them
+    # here: a dispatcher worker must not read a sibling/cross-tenant task it was handed an id for.
+    requested_tid = args.get("task_id")
+    pinned_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if pinned_tid and requested_tid and requested_tid != pinned_tid:
+        return tool_error(f"kanban_show refused: dispatcher worker is scoped to {pinned_tid}")
     tid = _require_task_id(args)
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
