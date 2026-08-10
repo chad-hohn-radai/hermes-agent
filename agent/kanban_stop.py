@@ -6,11 +6,17 @@ Policy-only: return a bounded synthetic nudge so the loop continues instead of e
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable, Optional
 
 
 _TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
+_HANDOFF_KANBAN_TOOLS = frozenset({
+    "kanban_escalate_to_default",
+    "mcp__kanban_escalation__kanban_escalate_to_default",
+})
+_SUCCESSFUL_HANDOFF_STATUSES = frozenset({"escalated", "already_escalated"})
 
 _DEFAULT_MAX_ATTEMPTS = 2
 
@@ -31,16 +37,64 @@ def _tool_call_name(tc: Any) -> str:
     return str((getattr(fn, "name", "") if fn is not None else getattr(tc, "name", "")) or "")
 
 
+def _tool_call_id(tc: Any) -> str:
+    if isinstance(tc, dict):
+        return str(tc.get("id") or tc.get("call_id") or "")
+    return str(getattr(tc, "id", "") or getattr(tc, "call_id", "") or "")
+
+
+def _successful_handoff_result(content: Any) -> bool:
+    """True only for a persisted successful specialist handoff response."""
+    payload = content
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
+            return False
+    if isinstance(payload, dict):
+        if payload.get("isError") is True or payload.get("error"):
+            return False
+        status = str(payload.get("status") or "")
+        if status in _SUCCESSFUL_HANDOFF_STATUSES:
+            return True
+        if status.lower() in {"error", "failed", "failure"}:
+            return False
+        for key in ("result", "content"):
+            if key in payload and _successful_handoff_result(payload[key]):
+                return True
+        return False
+    if isinstance(payload, list):
+        return any(_successful_handoff_result(item) for item in payload)
+    return False
+
+
 def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
-    """True if this conversation already invoked a terminal kanban tool."""
+    """True if this conversation already invoked a terminal kanban tool.
+
+    A *successful* specialist handoff also ends the turn: the worker has given the task away, so
+    demanding kanban_complete/kanban_block from it would be a protocol violation it cannot satisfy.
+    """
+    handoff_call_ids: set[str] = set()
     for msg in filter(lambda m: isinstance(m, dict), messages or ()):
         role = msg.get("role")
-        if role == "assistant" and any(
-            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS for tc in msg.get("tool_calls") or []
-        ):
-            return True
-        if role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:
-            return True
+        if role == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                name = _tool_call_name(tc)
+                if name in _TERMINAL_KANBAN_TOOLS:
+                    return True
+                if name in _HANDOFF_KANBAN_TOOLS:
+                    call_id = _tool_call_id(tc)
+                    if call_id:
+                        handoff_call_ids.add(call_id)
+        elif role == "tool":
+            name = str(msg.get("name") or "")
+            if name in _TERMINAL_KANBAN_TOOLS:
+                return True
+            call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+            if (name in _HANDOFF_KANBAN_TOOLS or call_id in handoff_call_ids) and (
+                _successful_handoff_result(msg.get("content"))
+            ):
+                return True
     return False
 
 
