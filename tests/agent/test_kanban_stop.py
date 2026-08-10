@@ -74,6 +74,59 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
+def _handoff_messages(content: object) -> list[dict]:
+    tool_name = "mcp__kanban_escalation__kanban_escalate_to_default"
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "handoff-1",
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": tool_name,
+            "tool_call_id": "handoff-1",
+            "content": content,
+        },
+    ]
+
+
+@pytest.mark.parametrize("status", ["escalated", "already_escalated"])
+def test_no_nudge_after_successful_specialist_handoff(clear_kanban_env, status):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = _handoff_messages('{"status": "' + status + '"}')
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages) is None
+
+
+def test_failed_specialist_handoff_still_nudges(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = _handoff_messages('{"error": "handoff did not apply"}')
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages) is not None
+
+
+def test_handoff_error_envelope_cannot_hide_nested_success(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = _handoff_messages(
+        {"error": "transport failed", "result": {"status": "escalated"}}
+    )
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages) is not None
+
+
+def test_unanswered_specialist_handoff_call_still_nudges(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = _handoff_messages('{"status": "escalated"}')[:1]
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages) is not None
+
 
 
 

@@ -81,6 +81,21 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_worker_cannot_read_another_explicit_task(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        other_id = kb.create_task(conn, title="other-worker-task")
+    finally:
+        conn.close()
+
+    out = json.loads(kt._handle_show({"task_id": other_id}))
+    assert out["error"].startswith("kanban_show refused")
+    assert worker_env in out["error"]
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

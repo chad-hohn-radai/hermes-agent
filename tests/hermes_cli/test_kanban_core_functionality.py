@@ -1277,6 +1277,124 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+def test_handoff_running_task_reassigns_without_terminating_caller(
+    kanban_home, monkeypatch
+):
+    """A worker-initiated handoff closes its run and requeues atomically."""
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(
+            conn, title="specialist handoff", assignee="triage-research"
+        )
+        claimed = kb.claim_task(conn, task_id, claimer="test-host:worker")
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert run_id is not None
+        source_pid = 54321
+        kb._set_worker_pid(conn, task_id, source_pid)
+        monkeypatch.setattr(kb, "_pid_alive", lambda pid: pid == source_pid)
+
+        marker = "[automatic-capability-escalation:v1] from triage-research to default."
+        assert kb.handoff_running_task(
+            conn,
+            task_id,
+            expected_run_id=run_id,
+            source_profile="triage-research",
+            target_profile="default",
+            reason="missing specialist capability",
+            comment_author="triage-research",
+            comment_body=marker,
+        ) is True
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.assignee == "default"
+        assert task.current_run_id is None
+        assert task.claim_lock is None
+        assert task.worker_pid is None
+        assert task.claim_expires is None
+
+        # The target cannot claim while the source process is still alive.
+        assert kb.claim_task(conn, task_id, claimer="test-host:target") is None
+
+        run = next(row for row in kb.list_runs(conn, task_id) if row.id == run_id)
+        assert run.status == "reclaimed"
+        assert run.outcome == "reclaimed"
+        assert run.ended_at is not None
+
+        comments = kb.list_comments(conn, task_id)
+        assert [(comment.author, comment.body) for comment in comments] == [
+            ("triage-research", marker)
+        ]
+
+        events = kb.list_events(conn, task_id)
+        commented = next(event for event in events if event.kind == "commented")
+        assert commented.payload["author"] == "triage-research"
+        reclaimed = next(event for event in events if event.kind == "reclaimed")
+        assert reclaimed.payload["handoff"] is True
+        assert reclaimed.payload["from_profile"] == "triage-research"
+        assert reclaimed.payload["to_profile"] == "default"
+        assert events[-1].kind == "assigned"
+        assert events[-1].payload["assignee"] == "default"
+
+        # Once the source exits, the same card becomes claimable by default.
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+        target_claim = kb.claim_task(conn, task_id, claimer="test-host:target")
+        assert target_claim is not None
+        assert target_claim.assignee == "default"
+        assert target_claim.current_run_id != run_id
+    finally:
+        conn.close()
+
+
+def test_handoff_running_task_rolls_back_comment_run_and_assignment(
+    kanban_home, monkeypatch
+):
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(
+            conn, title="atomic specialist handoff", assignee="triage-research"
+        )
+        claimed = kb.claim_task(conn, task_id, claimer="test-host:worker")
+        assert claimed is not None and claimed.current_run_id is not None
+        run_id = claimed.current_run_id
+        kb._set_worker_pid(conn, task_id, 54322)
+
+        original_append = kb._append_event
+
+        def fail_on_assignment(conn_arg, task_id_arg, kind, payload, **kwargs):
+            if kind == "assigned":
+                raise RuntimeError("injected assignment event failure")
+            return original_append(conn_arg, task_id_arg, kind, payload, **kwargs)
+
+        monkeypatch.setattr(kb, "_append_event", fail_on_assignment)
+        with pytest.raises(RuntimeError, match="injected assignment"):
+            kb.handoff_running_task(
+                conn,
+                task_id,
+                expected_run_id=run_id,
+                source_profile="triage-research",
+                target_profile="default",
+                reason="missing specialist capability",
+                comment_author="triage-research",
+                comment_body="[automatic-capability-escalation:v1] atomic test",
+            )
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "running"
+        assert task.assignee == "triage-research"
+        assert task.current_run_id == run_id
+        assert task.worker_pid == 54322
+        assert kb.list_comments(conn, task_id) == []
+        run = next(row for row in kb.list_runs(conn, task_id) if row.id == run_id)
+        assert run.status == "running"
+        assert run.ended_at is None
+    finally:
+        conn.close()
+
+
 # Unified failure counter — timeout + crash paths increment the same counter
 # as spawn failures, and the circuit breaker trips after N consecutive
 # failures regardless of which outcome caused them.
