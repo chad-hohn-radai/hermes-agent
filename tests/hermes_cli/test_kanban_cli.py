@@ -72,6 +72,21 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_kanban_show_json_includes_current_run_id(kanban_home):
+    """JSON show readback exposes the active run used by task-scoped callers."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="active run readback", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET status='running', current_run_id=42 WHERE id=?",
+            (task_id,),
+        )
+        conn.commit()
+
+    payload = json.loads(kc.run_slash(f"show {task_id} --json"))
+
+    assert payload["task"]["current_run_id"] == 42
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")
