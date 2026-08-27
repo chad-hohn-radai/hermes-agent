@@ -54,6 +54,21 @@ class HermesProviderMixin:
             request.headers["User-Agent"] = ua
         return request
 
+    def _stamp_flow_user_agent(self, request):
+        """Stamp ``oauth.user_agent`` onto any UA-less SDK request.
+
+        The SDK builds metadata-discovery and dynamic-registration requests as bare
+        ``httpx.Request`` objects, so they never inherit the client's default ``User-Agent``.
+        WAFs that reject UA-less requests (Revealed's ALB answers 403 to every such call,
+        including ``/.well-known/oauth-*`` and ``/register``) break the flow before the browser
+        step, so extend the configured value to the whole flow — never overriding a UA the
+        request already carries. ``_prepare_token_request`` covers only the token endpoint.
+        """
+        ua = getattr(self, "_hermes_token_user_agent", None)
+        if ua and request is not None and not request.headers.get("User-Agent"):
+            request.headers["User-Agent"] = ua
+        return request
+
     def _coerce_client_secret_post(self) -> None:
         """Same rule as ``HermesTokenStorage._coerce_secret_auth_method``, applied to the
         in-memory client info BEFORE the SDK builds a token-endpoint request from it."""
