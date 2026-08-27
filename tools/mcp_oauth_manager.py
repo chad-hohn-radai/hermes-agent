@@ -221,7 +221,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         resource_lock_released = retry_after_concurrent_auth = False
         sent_access_token = None
         try:
-            outgoing = await inner.__anext__()
+            outgoing = self._stamp_flow_user_agent(await inner.__anext__())
             while True:
                 # The SDK holds context.lock for its whole generator, even while HTTPX waits on
                 # the MCP request. Release it for that request only; OAuth transitions stay serialized.
@@ -246,7 +246,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
                 await self._maybe_flag_poisoned_client(incoming)
-                outgoing = await inner.asend(incoming)
+                outgoing = self._stamp_flow_user_agent(await inner.asend(incoming))
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
         finally:
