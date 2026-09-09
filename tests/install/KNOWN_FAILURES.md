@@ -1,6 +1,6 @@
 # Confirmed historical upgrade limitations
 
-These failures cannot be repaired by changing the update target: the failing code is already loaded from the starting release. The workflow still executes each original update path. Only a match on the exact starting commit, method pair, failed assertion, and fresh log signatures produces a non-red known-failure receipt. Other errors still fail. The results table shows matched cases as `known [n]`, with the explanation and evidence in a footnote at the bottom. These cases are counted separately from passed upgrades.
+These failures cannot be repaired by changing the update target: the failing code is already loaded from the starting release. The workflow still executes each original update path. A rule matches by exact starting commit OR by ancestry — any commit strictly before the rule's `before` fix commit carries the same unfixed code — so a rule stays covered as `pick-release-tags.sh` samples new tags between two already-documented releases, with no matcher update required. Only a match on commit (exact or ancestry), method pair, failed assertion, and fresh log signatures produces a non-red known-failure receipt. Other errors still fail. The results table shows matched cases as `known [n]`, with the explanation and evidence in a footnote at the bottom. These cases are counted separately from passed upgrades.
 
 The machine-readable rules in `e2e-assets/known-failures.json` own the matcher and report footnote text. This document explains their historical evidence. Logs are rotated before each attempt so an earlier failure cannot classify a later one.
 
@@ -25,7 +25,7 @@ Re-running the installer is a separate tested upgrade route. Invoking the old CL
 
 Classification: **unfixable in the update target for the exact released app-button path**.
 
-Starting releases: `v2026.7.1` (commit `7c1a029553d87c43ecff8a3821336bc95872213b`) through `v2026.7.20` (commit `3ef6bbd201263d354fd83ec55b3c306ded2eb72a`), the last tag before the repo-owned Windows update hand-off script (`92be912d73`, 2026-08-09) replaced the frozen updater.
+Starting releases: any commit strictly before the repo-owned Windows update hand-off script (`92be912d73`, 2026-08-09) that replaced the frozen updater — verified explicitly on `v2026.7.1` (commit `7c1a029553d87c43ecff8a3821336bc95872213b`) and `v2026.7.20` (commit `3ef6bbd201263d354fd83ec55b3c306ded2eb72a`); every other pre-fix tag (`v2026.7.7`, `v2026.7.30`, `v2026.8.3`, ...) matches by ancestry without a matcher update.
 
 | Install → update | Verified failing job |
 |---|---|
