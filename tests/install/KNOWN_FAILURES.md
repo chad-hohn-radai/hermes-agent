@@ -25,17 +25,20 @@ Re-running the installer is a separate tested upgrade route. Invoking the old CL
 
 Classification: **unfixable in the update target for the exact released app-button path**.
 
-Starting release: `v2026.7.1`, commit `7c1a029553d87c43ecff8a3821336bc95872213b`.
+Starting releases: `v2026.7.1` (commit `7c1a029553d87c43ecff8a3821336bc95872213b`) through `v2026.7.20` (commit `3ef6bbd201263d354fd83ec55b3c306ded2eb72a`), the last tag before the repo-owned Windows update hand-off script (`92be912d73`, 2026-08-09) replaced the frozen updater.
 
 | Install → update | Verified failing job |
 |---|---|
 | `installer-script` → `hermes-desktop-app-update` | [101514755236](https://github.com/ethernet8023/hermes-agent/actions/runs/34043635705/job/101514755236) |
 | `installer-script+desktop` → `hermes-desktop-app-update` | [101514760893](https://github.com/ethernet8023/hermes-agent/actions/runs/34043635705/job/101514760893) |
 | `installer-script+desktop` → `open-app-update` | [101514756508](https://github.com/ethernet8023/hermes-agent/actions/runs/34043635705/job/101514756508) |
+| `installer-script+desktop` → `hermes-desktop-app-update` (v2026.7.20) | [102656835872](https://github.com/chad-hohn-radai/hermes-agent/actions/runs/34408380364/job/102656835872) |
+| `installer-script` → `hermes-desktop-app-update` (v2026.7.20) | [102656835882](https://github.com/chad-hohn-radai/hermes-agent/actions/runs/34408380364/job/102656835882) |
+| `installer-script+desktop` → `open-app-update` (v2026.7.20) | [102656835542](https://github.com/chad-hohn-radai/hermes-agent/actions/runs/34408380364/job/102656835542) |
 
 These script installs have no staged updater. The released Electron code (`apps/desktop/electron/main.cjs:2212-2214`) logs `no staged updater; surfacing manual` and returns `{ ok: true, manual: true, command }`. It does not start an update. Each job's `logs/desktop.log` records that branch followed by `[updates] manual: hermes update`; no target checkout/result signal appears.
 
-Evidence required: an app-update leg from this released commit and those explicit manual-update log entries. A hand-off timeout without the manual message is not this limitation. Desktop-installer installs have a different staged-updater path and are not covered by this classification.
+Evidence required: an app-update leg from one of these released commits and those explicit manual-update log entries. A hand-off timeout without the manual message is not this limitation. Desktop-installer installs have a different staged-updater path and are not covered by this classification.
 
 ## Not classified as unfixable
 
