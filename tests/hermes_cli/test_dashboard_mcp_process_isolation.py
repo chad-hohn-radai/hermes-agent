@@ -86,9 +86,9 @@ def test_dashboard_no_mcp_sets_guard_and_skips_startup_discovery(monkeypatch):
 def test_process_level_mcp_disable_skips_config_and_connections(monkeypatch):
     monkeypatch.setenv("HERMES_MCP_DISABLED", "1")
     with patch("tools.mcp_tool._MCP_AVAILABLE", True), patch(
-        "tools.mcp_tool._load_mcp_config"
+        "tools.mcp_tool_config._load_mcp_config"
     ) as load_config:
-        from tools.mcp_tool import discover_mcp_tools
+        from tools.mcp_tool_discovery import discover_mcp_tools
 
         result = discover_mcp_tools()
 
@@ -100,15 +100,17 @@ def test_process_level_mcp_disable_blocks_direct_registration_and_lazy_connect(
     monkeypatch,
 ):
     monkeypatch.setenv("HERMES_MCP_DISABLED", "1")
-    from tools import mcp_tool
+    from tools import mcp_tool_discovery, mcp_tool_loop
 
-    with patch.object(mcp_tool, "_resolve_server_lazy") as resolve_lazy, patch.object(
-        mcp_tool, "_run_on_mcp_loop"
+    with patch.object(
+        mcp_tool_discovery, "_resolve_server_lazy"
+    ) as resolve_lazy, patch.object(
+        mcp_tool_loop, "_run_on_mcp_loop"
     ) as run_on_loop:
-        registered = mcp_tool.register_mcp_servers(
+        registered = mcp_tool_discovery.register_mcp_servers(
             {"bypass": {"url": "https://mcp.example/mcp", "lazy": True}}
         )
-        connected = mcp_tool._ensure_lazy_server_connected("bypass")
+        connected = mcp_tool_discovery._ensure_lazy_server_connected("bypass")
 
     assert registered == []
     assert connected is False
