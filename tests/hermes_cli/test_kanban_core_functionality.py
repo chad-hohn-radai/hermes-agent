@@ -1281,7 +1281,7 @@ def test_handoff_running_task_reassigns_without_terminating_caller(
     kanban_home, monkeypatch
 ):
     """A worker-initiated handoff closes its run and requeues atomically."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(
             conn, title="specialist handoff", assignee="triage-research"
@@ -1291,7 +1291,7 @@ def test_handoff_running_task_reassigns_without_terminating_caller(
         run_id = claimed.current_run_id
         assert run_id is not None
         source_pid = 54321
-        kb._set_worker_pid(conn, task_id, source_pid)
+        kbd._set_worker_pid(conn, task_id, source_pid)
         monkeypatch.setattr(kb, "_pid_alive", lambda pid: pid == source_pid)
 
         marker = "[automatic-capability-escalation:v1] from triage-research to default."
@@ -1351,7 +1351,7 @@ def test_handoff_running_task_reassigns_without_terminating_caller(
 def test_handoff_running_task_rolls_back_comment_run_and_assignment(
     kanban_home, monkeypatch
 ):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(
             conn, title="atomic specialist handoff", assignee="triage-research"
@@ -1359,7 +1359,7 @@ def test_handoff_running_task_rolls_back_comment_run_and_assignment(
         claimed = kb.claim_task(conn, task_id, claimer="test-host:worker")
         assert claimed is not None and claimed.current_run_id is not None
         run_id = claimed.current_run_id
-        kb._set_worker_pid(conn, task_id, 54322)
+        kbd._set_worker_pid(conn, task_id, 54322)
 
         original_append = kb._append_event
 
