@@ -83,9 +83,10 @@ def test_show_defaults_to_env_task_id(worker_env):
 
 def test_show_worker_cannot_read_another_explicit_task(worker_env):
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         other_id = kb.create_task(conn, title="other-worker-task")
     finally:
